@@ -227,8 +227,9 @@ more PRs (see CLAUDE.md for the workflow).
    conffile, `radio-website_all.deb` with lighttpd + php-fpm), install via
    `apt install ./<deb>`. Verified on the office Pi: reboot-proof, ~7%
    CPU, flat memory over a soak.
-7. **Polish (remaining)** — styling the site, auto-refreshing now-playing,
-   maybe favorites/presets.
+7. ✅ **Polish** — the Phosphor terminal UI (chosen from three rendered
+   proposals), live now-playing via a status.php proxy + a tiny poller,
+   blinking-cursor heartbeat. Favorites/presets remain a future idea.
 
 ## Formerly open questions, answered along the way
 

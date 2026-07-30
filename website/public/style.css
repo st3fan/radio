@@ -84,6 +84,16 @@ body::after {
     margin-left: 2px;
 }
 
+/* The cursor blinks only while the live poller is healthy (body.live is
+   set by radio.js) — a working heartbeat, not decoration. */
+@keyframes cursor-blink {
+    50% { opacity: 0; }
+}
+
+body.live .now .cursor {
+    animation: cursor-blink 1.1s steps(1) infinite;
+}
+
 .now .station { margin-bottom: 2px; }
 
 .now .vol { font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

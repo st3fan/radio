@@ -94,6 +94,7 @@ if ($status !== null && $status['state'] === 'playing') {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Radio</title>
 <link rel="stylesheet" href="style.css">
+<script src="radio.js" defer></script>
 </head>
 <body>
 
@@ -112,16 +113,20 @@ if ($status !== null && $status['state'] === 'playing') {
 <p class="error">! DAEMON UNREACHABLE: <?= h($daemon['error'] ?? 'no response') ?></p>
 </section>
 <?php else: ?>
-<section class="now">
+<?php
+// The now-playing block keeps a fixed structure (always a title and a
+// station line, possibly empty) so radio.js can update it in place.
+$title = (string) ($status['icy_title'] ?? '');
+$title_dim = false;
+if ($title === '' && $status['state'] === 'stopped') {
+    $title = '— NO SIGNAL —';
+    $title_dim = true;
+}
+?>
+<section class="now" id="now">
 <div class="prompt dim">&gt; <?= h($prompt) ?></div>
-<?php if (!empty($status['icy_title'])): ?>
-<h1 class="title"><?= h((string) $status['icy_title']) ?><span class="cursor" aria-hidden="true"></span></h1>
-<?php elseif ($status['state'] === 'stopped'): ?>
-<h1 class="title dim">— NO SIGNAL —</h1>
-<?php endif; ?>
-<?php if (!empty($status['icy_name'])): ?>
-<div class="station"><?= h((string) $status['icy_name']) ?></div>
-<?php endif; ?>
+<h1 class="title<?= $title_dim ? ' dim' : '' ?>"><?= h($title) ?><?= $status['state'] !== 'stopped' ? '<span class="cursor" aria-hidden="true"></span>' : '' ?></h1>
+<div class="station"><?= h((string) ($status['icy_name'] ?? '')) ?></div>
 <div class="vol dim">VOL <?= volume_bar((int) $status['volume'], (int) $status['max_volume']) ?><?= $status['muted'] ? ' · MUTED' : '' ?></div>
 </section>
 
