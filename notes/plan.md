@@ -135,6 +135,9 @@ initial_volume = 50           # startup volume, a percentage of max_volume
 
 ### REST API
 
+The full reference (exact status codes, edge cases, field lifecycles) is
+`notes/api.md`; this table is the design summary.
+
 | Method & path    | Body                          | Effect |
 |------------------|-------------------------------|--------|
 | `GET  /status`   | —                             | Full status (below). |
