@@ -72,7 +72,7 @@ playlist URL (.pls)
 | Concern            | Choice                            | Notes |
 |--------------------|-----------------------------------|-------|
 | Streaming + decode | `ffmpeg-next`                     | Safe wrapper over libav*. Maintenance-mode but kept compiling against FFmpeg 3.4–8.0, so it works with whatever Raspberry Pi OS ships. ~1.3M downloads/month. Alternative if we hit a wall: `rsmpeg` (actively developed, thinner/rawer API). |
-| ALSA output        | `alsa` crate (libasound bindings) | Use `plughw:...` so ALSA converts rate/format if needed. |
+| ALSA output        | `alsa` crate (libasound bindings) | Use `plughw:...` so ALSA converts rate/format if needed. Behind an `AudioSink` trait: ALSA is Linux-only, and a dev sink keeps macOS builds/tests green and makes the gain clamp assertable in tests. |
 | HTTP server        | `tiny_http`                       | The API is tiny; a small threaded server beats pulling in tokio/axum on a single ARMv6 core. |
 | HTTP client        | `ureq`                            | Only for fetching the `.pls` (a 5-line INI we parse by hand). |
 | Config             | `serde` + `toml`                  | |
@@ -85,8 +85,12 @@ playlist URL (.pls)
 - Build time: FFmpeg dev headers + libclang (the sys crates run bindgen).
   Building on the Pi Zero itself (one ARMv6 core, 512 MB) is a non-starter;
   we cross-compile for `arm-unknown-linux-gnueabihf` against a Raspberry
-  Pi OS sysroot, or build on a faster ARM box (e.g. a Pi 4 running 32-bit
-  Raspberry Pi OS) and copy the binary. Settled in the deployment milestone.
+  Pi OS sysroot. Settled in the deployment milestone.
+- Environments (details in CLAUDE.md): primary development on macOS
+  (everything except the ALSA sink builds and tests there); a Debian PC —
+  attached to the actual speakers — for real-ALSA integration testing over
+  SSH and as the likely host for the ARMv6 cross-build; the Pi Zero is a
+  deployment target only.
 
 ### Configuration
 
