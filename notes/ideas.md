@@ -249,6 +249,77 @@ security-design conversation attached to both.
 
 ---
 
+## Matter support
+
+**Why (the appeal):** Matter is the cross-vendor smart-home standard backed by
+Apple, Google, Amazon and Samsung. The pitch is that you implement it *once*
+and the device shows up natively in Apple Home, Google Home, Alexa and Home
+Assistant — no per-ecosystem integration, no cloud, local control, commission
+by scanning a QR code. For a box like this, "it just appears in the Home app"
+is genuinely the dream.
+
+**Why it may not deliver that here — the thing to check first.** Matter is
+strongest for lightbulbs, plugs, thermostats, locks and sensors. Its media
+side exists (clusters like Media Playback, Channel, Audio Output, and a
+Speaker device type) but it was designed around TVs and streaming boxes, and
+*ecosystem support for those device types is much thinner than the
+lightbulb-and-plug core*. The plausible bad outcome: we implement Matter and
+Apple Home renders our internet radio as an on/off switch with a brightness
+slider, which is a worse experience than a HomeKit-shaped lie we could have
+told in a weekend. So the very first task is not code — it's finding out what
+the current spec's media device types actually are and what each ecosystem
+does with them today. Everything below is contingent on that answer.
+
+If the device types *are* usable, the mapping is quite pretty: on/off and
+level for play/stop and volume, and Matter's **Channel** cluster — a channel
+list plus "change channel" — is a surprisingly natural fit for radio stations
+and would pair well with the favorites idea above.
+
+**What implementing it involves.** Matter is a much bigger protocol than
+anything else on this list:
+
+- IPv6 is mandatory (link-local is enough on the LAN, but it must work),
+  plus mDNS-based discovery.
+- Commissioning is a real cryptographic handshake — SPAKE2+ from a setup
+  code, then certificate-based session establishment — so we'd be taking on a
+  crypto stack on an ARM1176.
+- The reference SDK (`connectedhomeip`) is large C++. There is a Rust
+  implementation, `rs-matter`, which would fit the house style much better —
+  but it's a substantial dependency either way, and "keep dependencies few" is
+  a stated constraint.
+- **Certification is the likely hard blocker.** Shipping a real Matter device
+  means CSA membership, a vendor ID and device attestation certificates —
+  thousands of dollars and paperwork, which a hobby project isn't going to do.
+  Test/development credentials exist and Home Assistant will generally accept
+  them, but the commercial ecosystems are the ones that may not — and they're
+  the entire reason to want Matter in the first place. Worth confirming
+  exactly where each one stands before anything else.
+
+**Cheaper things that get most of the benefit:**
+
+- If the goal is **Home Assistant**, the MPD route above is a fraction of the
+  work and gives a proper media player entity. Matter buys nothing here.
+- If the goal is **Apple Home specifically**, HomeKit's own accessory protocol
+  is far more tractable for a non-commercial project (Homebridge already does
+  this, and there are HAP libraries) — with the same caveat that HomeKit has
+  no real "radio" accessory type either, so it'd be a switch-plus-slider
+  fiction.
+- If the goal is **"my phone can control it from anywhere in the house"**, the
+  website already does that, and a physical knob (below) may be the better
+  answer to the underlying want.
+
+**Honest summary:** the *idea* is right — one standard, every ecosystem, all
+local — but for an internet radio specifically, Matter's media support and the
+certification wall are both open questions, and the answers may well be "not
+yet". Cheap to investigate, expensive to build. Park it until someone spends
+an hour reading the current spec and poking at the Home app; revisit if a
+later Matter release takes speakers seriously.
+
+**Effort:** an hour to find out whether it's viable. Large and uncertain if it
+is.
+
+---
+
 ## A prebuilt image for a CF/SD card
 
 **Why:** today, standing up a new box is: flash Raspberry Pi OS, install
