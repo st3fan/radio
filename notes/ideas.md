@@ -37,6 +37,73 @@ row and a "Favorites" section pinned at the top of the page.
 
 ---
 
+## A setup screen for the config file
+
+**Why:** `/etc/radio/config.toml` has four fields, and today changing any of
+them means SSH, an editor, and `systemctl restart radiod`. `audio_device` in
+particular is the one field a new install is most likely to have wrong, and
+the failure mode is silence with no clue why. A settings page in the website
+would close that loop — and it's a prerequisite for the prebuilt image below,
+where there is no "just SSH in" step.
+
+**Sketch:** a `/settings` page in the website. `audio_device` picked from a
+list rather than typed — the daemon already links libasound, so a
+`GET /devices` endpoint enumerating cards is nicer than the website shelling
+out to `aplay -l` (and it reports what `radiod` itself can actually open,
+which is the question being asked). A **test tone** button next to it, so you
+can confirm the device works *before* saving. `initial_volume` is a plain
+number field.
+
+**Where the writes go — this is the part that needs thought.**
+`config.toml` is a dpkg conffile, deliberately, so upgrades don't clobber
+local edits (`notes/plan.md`, Packaging). Having php-fpm rewrite it fights
+that: dpkg would see a modified conffile and start prompting on every
+upgrade. Better: a drop-in the package doesn't own — `/etc/radio/conf.d/` or
+a `/var/lib/radio/settings.toml` — layered over the conffile at load time,
+with the conffile staying the admin/SSH-owned base. That's a change in
+`radiod`'s config loading, not just a new page.
+
+Then the config has to take effect. Three options, in increasing niceness:
+website restarts the unit (needs a polkit or sudoers rule for one specific
+`systemctl restart radiod` — more privilege than the website has today), the
+daemon reloads on `SIGHUP`, or — probably cleanest — the daemon owns this
+entirely behind a `GET`/`POST /settings` API and the website just renders it.
+The daemon is the only process that should be writing its own config.
+
+**Two things that must not be in the form:**
+
+- **`listen`.** It binds loopback, and that's the property that keeps the
+  daemon off the LAN. A web form that can change it can undo that. Leave it
+  SSH-only.
+- **`max_volume`.** This is the safety cap (`CLAUDE.md`), and right now it can
+  only be raised by someone with root on the box. Putting it behind an
+  unauthenticated LAN page means the invariant is only as strong as "nobody
+  else is on the WiFi" — which is not what we promised. Options, if we want it
+  at all: allow *lowering* only, or show it read-only with a note saying where
+  to change it. My inclination is to leave it out of v1 entirely and see if we
+  ever miss it.
+
+**Open questions:**
+
+- The website has no authentication whatsoever today, which is fine when the
+  worst a stranger can do is change the station. A page that reconfigures the
+  device is a different blast radius. Does this want a password, or is
+  "it's my WiFi" enough? (Related: the auth conversation the Home Assistant
+  idea forces.)
+- Recovery. If you save a broken `audio_device` and playback dies, can you
+  fix it from the same page, or have you locked yourself out of the only UI?
+  The test-tone-before-save flow mostly avoids this; a "reset to defaults"
+  escape hatch would finish the job.
+- Validation belongs wherever the write happens — the daemon should reject a
+  device it can't open and a volume out of range, regardless of what the form
+  allowed.
+
+**Effort:** small for the page, medium once the layered-config and
+who-writes-it questions are answered. Those answers are also what the image
+needs, so it's worth doing this one first and letting the image inherit it.
+
+---
+
 ## More streams beyond SomaFM
 
 **Why:** SomaFM is great but it is one curator's taste. Sometimes you want a
@@ -202,8 +269,8 @@ Build it in CI or in the same Docker container we already cross-build in.
   someone.
 - **Audio device autodetection.** The packaged default is `plughw:0,0`, which
   is right for the office Pi's USB speakers and wrong in general. An image
-  needs to pick a sane device at first boot, or a first-run page in the
-  website that lists `aplay -l` output and writes the config.
+  needs to pick a sane device at first boot, or lean on the setup screen
+  above (which is why that one should land first).
 - **First-boot volume.** An unknown user's speakers with our default cap
   of 50 — is that safe? Probably start lower for an image build.
 - **Size, and rebuilds.** An image is a release artifact that goes stale;
