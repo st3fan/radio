@@ -45,6 +45,10 @@ that day). The plan describes what will be built and how.
 
 - All work lands via pull requests — no direct commits to `main`.
 - Stefan reads and approves PRs before they merge.
+- Always check PR status with `gh` (e.g. `gh pr view`, `gh pr list`) instead
+  of assuming a PR is still open — it may have been merged or closed in the
+  meantime. Never push follow-up commits to a branch whose PR is no longer
+  open; put them on a new branch with a new PR.
 - Single-PR work: branch from `main`, open a PR against `main`.
 - Multi-PR work (a plan with phases): create an **integration branch** from
   `main` (e.g. `integration/daemon-playback`), open each phase's PR against
@@ -60,10 +64,25 @@ that day). The plan describes what will be built and how.
 - Keep dependencies minimal and justify new ones in the PR description. The
   approved core set: `ffmpeg-next`, `alsa`, `tiny_http`, `ureq`, `serde`,
   `toml`. No async runtimes.
-- Building needs FFmpeg dev headers and libclang (bindgen). Development
-  happens on a regular machine (FFmpeg installs fine on macOS/Linux);
-  anything ALSA/hardware-specific is verified on the Pi itself. The Pi
-  binary is cross-compiled — never built on the Pi Zero.
+- Audio output goes through an `AudioSink` trait. The ALSA implementation is
+  Linux-only (`#[cfg(target_os = "linux")]` — the `alsa` crate does not
+  compile on macOS); a dev sink (null / WAV file) keeps the crate building
+  and testing on macOS and lets tests assert on the samples actually
+  written (e.g. that the gain clamp held).
+
+## Development environments
+
+- **Mac (primary):** day-to-day development. Everything except the ALSA sink
+  builds and tests here. Needs `ffmpeg` + `pkg-config` from Homebrew;
+  bindgen uses Xcode's libclang. `cargo test`, `clippy`, `fmt` must always
+  be green on macOS.
+- **Debian PC (integration):** connected to the actual speakers. Used over
+  SSH for real-audio testing with real ALSA from milestone 2 onward — test
+  here regularly once audio code exists, since macOS gives no signal on the
+  ALSA/Linux side. Same Debian library ecosystem as Raspberry Pi OS. Also
+  the likely place to produce the ARMv6 cross-compiled binary.
+- **Pi Zero (target only):** deployment target. Never develop or build on
+  it — one ARMv6 core and 512 MB make that a non-starter.
 
 ### PHP (`web/`)
 
