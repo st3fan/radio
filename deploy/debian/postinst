@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+
+# Dedicated system user; audio group membership for the ALSA device.
+if ! getent passwd radio >/dev/null; then
+    adduser --system --group --no-create-home --home /nonexistent radio
+fi
+if ! id -nG radio | grep -qw audio; then
+    adduser radio audio
+fi
+
+#DEBHELPER#

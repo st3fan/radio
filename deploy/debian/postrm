@@ -1,0 +1,7 @@
+#!/bin/sh
+set -e
+
+# The radio user is deliberately kept on remove/purge, per Debian policy
+# recommendation (uid reuse is riskier than a leftover system user).
+
+#DEBHELPER#

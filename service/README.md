@@ -71,6 +71,42 @@ Volume requests take 0–100 as a **percentage of `max_volume`**: 100 means
 of 100 yields an effective device volume of 30. Responses and `/status`
 always show the effective value.
 
+## Cross-compiling for the Pi Zero W
+
+The Pi Zero W 1 is ARMv6 (`arm-unknown-linux-gnueabihf`) — stock Debian
+armhf binaries are ARMv7 and will not run on it, and building on the Zero
+itself is a non-starter. Builds happen on the Debian PC against a sysroot
+copied from the Pi, so the linked libav*/libasound sonames match the Pi's
+exactly:
+
+```
+# once: rustup target add arm-unknown-linux-gnueabihf
+#       sudo apt install gcc-arm-linux-gnueabihf clang rsync
+#       (on the Pi) sudo apt install libavformat-dev libavcodec-dev \
+#           libavutil-dev libswresample-dev libasound2-dev libgcc-14-dev
+
+./build-pi.sh sync <pi-host>    # copy the sysroot (repeat after Pi upgrades)
+./build-pi.sh build             # target/arm-unknown-linux-gnueabihf/release/radiod
+```
+
+Gotchas the script handles (each discovered the hard way against a real
+Pi Zero running Raspbian trixie):
+
+- Debian's cross gcc emits ARMv7 code by default, so C compiled by build
+  scripts gets `-march=armv6 -mfpu=vfp` forced to match the Rust target.
+- The cross gcc's *companion* crt/libgcc objects are ARMv7/Thumb-2 and
+  SIGILL on the Zero before `main()`; linking uses the Pi's own (`-B`
+  prefixes into the sysroot, hence `libgcc-14-dev` on the Pi, minus the
+  Pi's LTO plugin which the host linker cannot load).
+- Raspbian's FFmpeg carries vendor pixel formats (SAND/RPI4) unknown to
+  ffmpeg-next's exhaustive matches; `sync` hides them from bindgen (they
+  sit at the enum tail, so no other value shifts — and an audio daemon
+  never touches video pixel formats).
+- ffmpeg-sys' host-compiled version probe needs an empty `stubs-soft.h`
+  shim, trixie's merged-/usr needs a `lib -> usr/lib` symlink plus the
+  loader compat path, and the kernel UAPI headers live under
+  `/usr/lib/linux/uapi` on trixie.
+
 ## Checks
 
 Run before considering any change done:

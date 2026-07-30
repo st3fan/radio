@@ -1,0 +1,16 @@
+# Configuration for radiod. All settings are optional; the values shown
+# for the commented-out entries are the defaults.
+
+# The ALSA output device. Find yours with `aplay -l`; the plughw prefix
+# lets ALSA convert sample rates/formats the hardware does not support.
+audio_device = "plughw:0,0"
+
+# The HTTP API endpoint. Must be a loopback address.
+#listen = "127.0.0.1:8080"
+
+# The hard volume cap (0-100). The audio level can NEVER exceed this, no
+# matter what the API is asked. Think of your speakers and neighbours.
+#max_volume = 50
+
+# The volume at startup, as a percentage of max_volume (100 = the cap).
+#initial_volume = 50
