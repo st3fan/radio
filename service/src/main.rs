@@ -1,4 +1,5 @@
 mod config;
+mod icy;
 mod pipeline;
 mod player;
 mod pls;
