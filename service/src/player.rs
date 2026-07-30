@@ -222,12 +222,15 @@ fn play(
     station: &Station,
 ) -> Outcome {
     // Optimistic: `playing` means "trying to play". Set before opening so
-    // the status holds steady through reconnect attempts.
+    // the status holds steady through reconnect attempts. Metadata resets
+    // per session — a new station (or a reconnect) repopulates it.
     {
         let mut status = status.lock().expect("status lock poisoned");
         status.state = State::Playing;
         status.playlist_url = Some(station.playlist_url.clone());
         status.stream_url = Some(station.stream_url.clone());
+        status.icy_title = None;
+        status.icy_name = None;
     }
 
     let stream_url = station.stream_url.as_str();
@@ -263,6 +266,12 @@ fn play(
             }
         };
 
+        if let Some(icy) = source.icy() {
+            let mut status = status.lock().expect("status lock poisoned");
+            status.icy_title = icy.title;
+            status.icy_name = icy.name;
+        }
+
         let gain = {
             let status = status.lock().expect("status lock poisoned");
             volume::gain(status.volume, status.muted)
@@ -284,6 +293,8 @@ fn set_stopped(status: &Mutex<Status>) {
     status.state = State::Stopped;
     status.playlist_url = None;
     status.stream_url = None;
+    status.icy_title = None;
+    status.icy_name = None;
 }
 
 /// Paused keeps the station URLs visible — that is the difference from
@@ -422,6 +433,119 @@ mod tests {
             buf.fill(1000);
             Ok(buf.len())
         }
+    }
+
+    /// A sine source that emits ICY metadata changes on a schedule of
+    /// (after_n_reads, title) entries.
+    struct MetadataSource {
+        inner: SineSource,
+        reads: usize,
+        schedule: Vec<(usize, &'static str)>,
+        emitted: usize,
+    }
+
+    impl crate::source::Source for MetadataSource {
+        fn spec(&self) -> crate::sink::AudioSpec {
+            self.inner.spec()
+        }
+
+        fn read(&mut self, buf: &mut [i16]) -> Result<usize, SourceError> {
+            self.reads += 1;
+            // Pace the reads so a scheduled title stays observable for a
+            // while before the next one replaces it.
+            std::thread::sleep(Duration::from_millis(1));
+            self.inner.read(buf)
+        }
+
+        fn icy(&mut self) -> Option<crate::icy::IcyMetadata> {
+            let (after, title) = *self.schedule.get(self.emitted)?;
+            if self.reads < after {
+                return None;
+            }
+            self.emitted += 1;
+            Some(crate::icy::IcyMetadata {
+                name: Some("Test FM".to_string()),
+                title: Some(title.to_string()),
+            })
+        }
+    }
+
+    #[test]
+    fn metadata_changes_reach_the_status() {
+        let status = playing_status("");
+        let sink = TestSink::default();
+        let factory: SourceFactory = Box::new(|_| {
+            Ok(Box::new(MetadataSource {
+                inner: SineSource::new(),
+                reads: 0,
+                schedule: vec![(1, "First Song"), (150, "Second Song")],
+                emitted: 0,
+            }))
+        });
+        let player = spawn(status.clone(), Box::new(sink.clone()), factory);
+        start_playing(&player, &status);
+
+        wait_for(|| status.lock().unwrap().icy_title.as_deref() == Some("First Song"));
+        assert_eq!(status.lock().unwrap().icy_name.as_deref(), Some("Test FM"));
+        wait_for(|| status.lock().unwrap().icy_title.as_deref() == Some("Second Song"));
+
+        // Pause keeps the metadata — the station has not changed.
+        player.send(Command::Pause);
+        wait_for(|| status.lock().unwrap().state == State::Paused);
+        {
+            let status = status.lock().unwrap();
+            assert_eq!(status.icy_title.as_deref(), Some("Second Song"));
+            assert_eq!(status.icy_name.as_deref(), Some("Test FM"));
+        }
+
+        // Stop clears it.
+        player.send(Command::Stop);
+        wait_for(|| status.lock().unwrap().state == State::Stopped);
+        {
+            let status = status.lock().unwrap();
+            assert_eq!(status.icy_title, None);
+            assert_eq!(status.icy_name, None);
+        }
+    }
+
+    #[test]
+    fn station_switch_clears_stale_metadata() {
+        let status = playing_status("");
+        let sink = TestSink::default();
+        let opens = Arc::new(Mutex::new(0u32));
+        let opens_in_factory = opens.clone();
+        let factory: SourceFactory = Box::new(move |_| {
+            let mut opens = opens_in_factory.lock().unwrap();
+            *opens += 1;
+            if *opens == 1 {
+                // First station reports metadata immediately.
+                Ok(Box::new(MetadataSource {
+                    inner: SineSource::new(),
+                    reads: 0,
+                    schedule: vec![(1, "Old Song")],
+                    emitted: 0,
+                }))
+            } else {
+                // Second station never reports any.
+                Ok(Box::new(SineSource::new()))
+            }
+        });
+        let player = spawn(status.clone(), Box::new(sink.clone()), factory);
+        start_playing(&player, &status);
+        wait_for(|| status.lock().unwrap().icy_title.as_deref() == Some("Old Song"));
+
+        player.send(Command::Play {
+            playlist_url: "https://example.com/other.pls".to_string(),
+            stream_url: "https://example.com/other".to_string(),
+        });
+        wait_for(|| {
+            status.lock().unwrap().playlist_url.as_deref() == Some("https://example.com/other.pls")
+        });
+        wait_for(|| status.lock().unwrap().icy_title.is_none());
+        assert_eq!(status.lock().unwrap().icy_name, None);
+
+        player.send(Command::Stop);
+        wait_for(|| status.lock().unwrap().state == State::Stopped);
     }
 
     #[test]

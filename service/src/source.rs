@@ -22,6 +22,11 @@ pub trait Source: Send {
     /// the number of samples written; 0 means end of stream. Blocks roughly
     /// for the real-time duration of the chunk so playback is paced.
     fn read(&mut self, buf: &mut [i16]) -> Result<usize, SourceError>;
+    /// Returns the stream metadata when it changed since the last call.
+    /// The player polls this between chunks.
+    fn icy(&mut self) -> Option<crate::icy::IcyMetadata> {
+        None
+    }
 }
 
 /// Builds a source for a stream URL. Injected into the player so tests can

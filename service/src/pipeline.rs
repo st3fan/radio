@@ -5,10 +5,12 @@
 //! source produces.
 
 use std::collections::VecDeque;
+use std::ffi::CStr;
 use std::sync::Once;
 
 use ffmpeg_next as ffmpeg;
 
+use crate::icy::{self, IcyMetadata};
 use crate::sink::AudioSpec;
 use crate::source::{Source, SourceError};
 
@@ -35,6 +37,33 @@ pub struct FfmpegSource {
     spec: AudioSpec,
     queue: VecDeque<i16>,
     eof: bool,
+    icy_name: Option<String>,
+    last_emitted: Option<IcyMetadata>,
+}
+
+/// Reads a string option off the format context (searching child objects —
+/// the ICY values live on the underlying http protocol context). This is
+/// the same mechanism mpv uses; ffmpeg-next has no safe wrapper for
+/// av_opt_get, hence the contained unsafe.
+fn format_option(ictx: &mut ffmpeg::format::context::Input, name: &CStr) -> Option<String> {
+    let mut out: *mut u8 = std::ptr::null_mut();
+    // SAFETY: ictx is a valid, open AVFormatContext; on success av_opt_get
+    // stores an av_malloc'd, NUL-terminated string in `out`, which we copy
+    // and free with av_free.
+    unsafe {
+        let ret = ffmpeg::sys::av_opt_get(
+            ictx.as_mut_ptr().cast(),
+            name.as_ptr(),
+            ffmpeg::sys::AV_OPT_SEARCH_CHILDREN,
+            &mut out,
+        );
+        if ret < 0 || out.is_null() {
+            return None;
+        }
+        let value = CStr::from_ptr(out.cast()).to_string_lossy().into_owned();
+        ffmpeg::sys::av_free(out.cast());
+        if value.is_empty() { None } else { Some(value) }
+    }
 }
 
 impl FfmpegSource {
@@ -42,14 +71,20 @@ impl FfmpegSource {
         init();
 
         let mut options = ffmpeg::Dictionary::new();
-        // Let libavformat ride out transient network errors itself; a full
-        // reopen-with-backoff at the player level is milestone 4.
+        // libavformat rides out transient network errors itself; the player
+        // adds reopen-with-backoff on top.
         options.set("reconnect", "1");
         options.set("reconnect_streamed", "1");
         options.set("reconnect_delay_max", "10");
         options.set("user_agent", concat!("radiod/", env!("CARGO_PKG_VERSION")));
+        // Ask the server for ICY metadata (the http default, but the icy()
+        // implementation depends on it — be explicit).
+        options.set("icy", "1");
 
-        let ictx = ffmpeg::format::input_with_dictionary(&url, options)?;
+        let mut ictx = ffmpeg::format::input_with_dictionary(&url, options)?;
+        let icy_name = format_option(&mut ictx, c"icy_metadata_headers")
+            .as_deref()
+            .and_then(icy::parse_icy_name);
         let stream = ictx
             .streams()
             .best(ffmpeg::media::Type::Audio)
@@ -89,6 +124,8 @@ impl FfmpegSource {
             spec: AudioSpec { rate, channels },
             queue: VecDeque::new(),
             eof: false,
+            icy_name,
+            last_emitted: None,
         })
     }
 
@@ -160,5 +197,20 @@ impl Source for FfmpegSource {
             *slot = self.queue.pop_front().expect("queue has n samples");
         }
         Ok(n)
+    }
+
+    fn icy(&mut self) -> Option<IcyMetadata> {
+        let title = format_option(&mut self.ictx, c"icy_metadata_packet")
+            .as_deref()
+            .and_then(icy::parse_stream_title);
+        let current = IcyMetadata {
+            name: self.icy_name.clone(),
+            title,
+        };
+        if self.last_emitted.as_ref() == Some(&current) {
+            return None;
+        }
+        self.last_emitted = Some(current.clone());
+        Some(current)
     }
 }
