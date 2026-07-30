@@ -54,6 +54,10 @@ that day). The plan describes what will be built and how.
   `main` (e.g. `integration/daemon-playback`), open each phase's PR against
   that branch, and when the whole plan is done, merge the integration branch
   to `main` with one final PR.
+- Merge strategy: **squash-merge** each phase PR into the integration branch
+  (one commit per phase), then merge the integration branch to `main` with a
+  **merge commit**. This keeps the phase commits visible in `git log` while
+  `git log --first-parent main` shows one entry per milestone.
 
 ## Coding notes
 
