@@ -59,6 +59,8 @@ initial_volume = 50           # percentage of max_volume (50 = half the cap)
 curl http://127.0.0.1:8080/status
 curl -X POST http://127.0.0.1:8080/play -d '{"playlist_url": "https://somafm.com/defcon.pls"}'
 curl -X POST http://127.0.0.1:8080/stop
+curl -X POST http://127.0.0.1:8080/pause
+curl -X POST http://127.0.0.1:8080/resume
 curl -X POST http://127.0.0.1:8080/volume -d '{"volume": 30}'
 curl -X POST http://127.0.0.1:8080/mute
 curl -X POST http://127.0.0.1:8080/unmute
