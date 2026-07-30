@@ -57,6 +57,15 @@ function h(string $text): string
     return htmlspecialchars($text, ENT_QUOTES);
 }
 
+/** The terminal volume bar: [██████░░░░░░░░░░░░░░] 25/50 */
+function volume_bar(int $volume, int $max_volume): string
+{
+    $segments = 20;
+    $filled = $max_volume > 0 ? (int) round($volume * $segments / $max_volume) : 0;
+    $filled = max(0, min($segments, $filled));
+    return '[' . str_repeat('█', $filled) . str_repeat('░', $segments - $filled) . "] {$volume}/{$max_volume}";
+}
+
 $error = isset($_GET['error']) ? (string) $_GET['error'] : null;
 $daemon = radio_status();
 $status = ($daemon['ok'] ?? false) ? $daemon['status'] : null;
@@ -70,6 +79,13 @@ if ($status !== null && (int) $status['max_volume'] > 0) {
     $volume_percent = (int) round((int) $status['volume'] * 100 / (int) $status['max_volume']);
 }
 
+$prompt = 'STANDBY';
+if ($status !== null && $status['state'] === 'playing') {
+    $prompt = 'NOW PLAYING';
+} elseif ($status !== null && $status['state'] === 'paused') {
+    $prompt = 'PAUSED';
+}
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -77,90 +93,111 @@ if ($status !== null && (int) $status['max_volume'] > 0) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Radio</title>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-<h1>Radio</h1>
+
+<header class="term-head">
+<span>RADIO</span>
+<span class="dim">SOMAFM TUNER</span>
+</header>
 
 <?php if ($error !== null): ?>
-<p><strong>Error:</strong> <?= h($error) ?></p>
+<p class="error">! ERROR: <?= h($error) ?></p>
 <?php endif; ?>
 
 <?php if ($status === null): ?>
-<p><strong>Radio daemon:</strong> <?= h($daemon['error'] ?? 'not reachable') ?></p>
+<section class="now">
+<div class="prompt dim">&gt; STATUS</div>
+<p class="error">! DAEMON UNREACHABLE: <?= h($daemon['error'] ?? 'no response') ?></p>
+</section>
 <?php else: ?>
-<h2>Now</h2>
-<p>
-State: <strong><?= h((string) $status['state']) ?></strong>
-<?php if ($status['muted']): ?>(muted)<?php endif; ?><br>
-<?php if (!empty($status['icy_name'])): ?>
-Station: <?= h((string) $status['icy_name']) ?><br>
-<?php endif; ?>
+<section class="now">
+<div class="prompt dim">&gt; <?= h($prompt) ?></div>
 <?php if (!empty($status['icy_title'])): ?>
-Playing: <strong><?= h((string) $status['icy_title']) ?></strong><br>
+<h1 class="title"><?= h((string) $status['icy_title']) ?><span class="cursor" aria-hidden="true"></span></h1>
+<?php elseif ($status['state'] === 'stopped'): ?>
+<h1 class="title dim">— NO SIGNAL —</h1>
 <?php endif; ?>
-Volume: <?= (int) $status['volume'] ?> (max <?= (int) $status['max_volume'] ?>)
-</p>
+<?php if (!empty($status['icy_name'])): ?>
+<div class="station"><?= h((string) $status['icy_name']) ?></div>
+<?php endif; ?>
+<div class="vol dim">VOL <?= volume_bar((int) $status['volume'], (int) $status['max_volume']) ?><?= $status['muted'] ? ' · MUTED' : '' ?></div>
+</section>
 
-<p>
+<section class="controls">
 <?php if ($status['state'] === 'playing'): ?>
-<form method="post"><button name="action" value="pause">Pause</button></form>
+<form method="post"><button name="action" value="pause">[PAUSE]</button></form>
 <?php elseif ($status['state'] === 'paused'): ?>
-<form method="post"><button name="action" value="resume">Resume</button></form>
+<form method="post"><button name="action" value="resume">[RESUME]</button></form>
 <?php endif; ?>
 <?php if ($status['state'] !== 'stopped'): ?>
-<form method="post"><button name="action" value="stop">Stop</button></form>
+<form method="post"><button name="action" value="stop">[STOP]</button></form>
 <?php endif; ?>
 <?php if ($status['muted']): ?>
-<form method="post"><button name="action" value="unmute">Unmute</button></form>
+<form method="post"><button name="action" value="unmute">[UNMUTE]</button></form>
 <?php else: ?>
-<form method="post"><button name="action" value="mute">Mute</button></form>
+<form method="post"><button name="action" value="mute">[MUTE]</button></form>
 <?php endif; ?>
-</p>
-
 <form method="post">
-<label>Volume (% of max):
+<input type="hidden" name="volume" value="<?= max(0, $volume_percent - 10) ?>">
+<button name="action" value="volume">[VOL-]</button>
+</form>
+<form method="post">
+<input type="hidden" name="volume" value="<?= min(100, $volume_percent + 10) ?>">
+<button name="action" value="volume">[VOL+]</button>
+</form>
+</section>
+
+<form method="post" class="volform">
+<label>VOL%
 <input type="number" name="volume" min="0" max="100" value="<?= $volume_percent ?>">
 </label>
-<button name="action" value="volume">Set</button>
+<button name="action" value="volume">[SET]</button>
 </form>
 <?php endif; ?>
 
-<h2>Channels</h2>
+<section class="channels">
+<div class="heading dim">&gt; CHANNELS</div>
 <?php if ($channels === null): ?>
-<p>Could not load the SomaFM channel list.</p>
+<p class="error">! CHANNEL LIST UNAVAILABLE</p>
 <?php else: ?>
-<table border="1" cellpadding="4">
-<tr><th></th><th></th><th>Channel</th><th>Genre</th><th>Listeners</th><th>Description</th></tr>
+<table>
+<tr><th>CH</th><th>STATION</th><th class="col-genre">GENRE</th><th class="num">LSNRS</th><th></th></tr>
+<?php $ch = 0; ?>
 <?php foreach ($channels as $channel): ?>
 <?php
 $id = (string) ($channel['id'] ?? '');
 if ($id === '') {
     continue;
 }
+$ch++;
 $is_current = $status !== null
     && ($status['playlist_url'] ?? null) === somafm_playlist_url($channels, $id);
-$image = is_string($channel['image'] ?? null) ? $channel['image'] : null;
+$genre = str_replace('|', ' · ', (string) ($channel['genre'] ?? ''));
 ?>
-<tr>
+<tr<?= $is_current ? ' class="playing"' : '' ?>>
+<td><?= str_pad((string) $ch, 2, '0', STR_PAD_LEFT) ?></td>
+<td title="<?= h((string) ($channel['description'] ?? '')) ?>"><?= $is_current ? '&gt; ' : '' ?><?= h((string) ($channel['title'] ?? $id)) ?></td>
+<td class="col-genre genre"><?= h($genre) ?></td>
+<td class="num"><?= (int) ($channel['listeners'] ?? 0) ?></td>
 <td>
-<?php if ($image !== null): ?>
-<img src="<?= h($image) ?>" alt="" width="60" height="60" loading="lazy">
-<?php endif; ?>
-</td>
-<td>
+<?php if ($is_current): ?>
+<span class="onair">[ON AIR]</span>
+<?php else: ?>
 <form method="post">
 <input type="hidden" name="channel" value="<?= h($id) ?>">
-<button name="action" value="play"><?= $is_current ? '&#9654; Playing' : 'Play' ?></button>
+<button name="action" value="play">[PLAY]</button>
 </form>
+<?php endif; ?>
 </td>
-<td><?= $is_current ? '<strong>' : '' ?><?= h((string) ($channel['title'] ?? $id)) ?><?= $is_current ? '</strong>' : '' ?></td>
-<td><?= h((string) ($channel['genre'] ?? '')) ?></td>
-<td><?= (int) ($channel['listeners'] ?? 0) ?></td>
-<td><?= h((string) ($channel['description'] ?? '')) ?></td>
 </tr>
 <?php endforeach; ?>
 </table>
 <?php endif; ?>
+</section>
+
+<footer class="dim">RADIO · CHANNEL DATA © SOMAFM, CACHED 5 MIN · LISTENER-SUPPORTED RADIO</footer>
 
 </body>
 </html>
