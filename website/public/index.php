@@ -130,7 +130,7 @@ Volume: <?= (int) $status['volume'] ?> (max <?= (int) $status['max_volume'] ?>)
 <p>Could not load the SomaFM channel list.</p>
 <?php else: ?>
 <table border="1" cellpadding="4">
-<tr><th></th><th>Channel</th><th>Genre</th><th>Listeners</th><th>Description</th></tr>
+<tr><th></th><th></th><th>Channel</th><th>Genre</th><th>Listeners</th><th>Description</th></tr>
 <?php foreach ($channels as $channel): ?>
 <?php
 $id = (string) ($channel['id'] ?? '');
@@ -139,8 +139,14 @@ if ($id === '') {
 }
 $is_current = $status !== null
     && ($status['playlist_url'] ?? null) === somafm_playlist_url($channels, $id);
+$image = is_string($channel['image'] ?? null) ? $channel['image'] : null;
 ?>
 <tr>
+<td>
+<?php if ($image !== null): ?>
+<img src="<?= h($image) ?>" alt="" width="60" height="60" loading="lazy">
+<?php endif; ?>
+</td>
 <td>
 <form method="post">
 <input type="hidden" name="channel" value="<?= h($id) ?>">
