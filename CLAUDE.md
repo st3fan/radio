@@ -83,12 +83,15 @@ that day). The plan describes what will be built and how.
   bindgen uses Xcode's libclang. `cargo test`, `clippy`, `fmt` must always
   be green on macOS.
 - **Debian PC (integration):** connected to the actual speakers. Used over
-  SSH for real-audio testing with real ALSA from milestone 2 onward — test
-  here regularly once audio code exists, since macOS gives no signal on the
-  ALSA/Linux side. Same Debian library ecosystem as Raspberry Pi OS. Also
-  the likely place to produce the ARMv6 cross-compiled binary.
-- **Pi Zero (target only):** deployment target. Never develop or build on
-  it — one ARMv6 core and 512 MB make that a non-starter.
+  SSH for real-audio testing with real ALSA — test here regularly when
+  audio code changes, since macOS gives no signal on the ALSA/Linux side.
+  Same Debian library ecosystem as Raspberry Pi OS.
+- **Any Debian environment (packaging):** the ARMv6 cross-build and .deb
+  packaging run via `service/build-pi.sh` + `deploy/build-website-deb.sh`
+  in any Debian environment with SSH access to the Pi — the Debian PC or a
+  Docker container on the Mac both work.
+- **Pi Zero (target only):** runs the release packages. Never develop or
+  build on it — one ARMv6 core and 512 MB make that a non-starter.
 
 ### PHP (`website/`)
 

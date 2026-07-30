@@ -26,8 +26,9 @@ Two components, shipped as two Debian packages:
 
 ## Building the packages
 
-On a Debian machine with SSH access to the Pi (see `service/README.md`
-for prerequisites and the cross-compilation details):
+In any Debian environment — a Debian machine or a Docker container works
+equally well — with SSH access to the Pi for the sysroot sync (see
+`service/README.md` for prerequisites and the cross-compilation gotchas):
 
 ```
 service/build-pi.sh sync <pi-host>   # once, and after Pi upgrades

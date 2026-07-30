@@ -45,7 +45,7 @@ playlist URL (.pls)
   → av_read_frame → libavcodec decode → PCM
   → libswresample → s16 interleaved
   → software gain: effective volume / 100, or 0 when muted   ← the bound
-  → alsa crate → device (plughw:1,0)
+  → alsa crate → the configured device (plughw:0,0 on the office Pi)
 ```
 
 - Playback runs on a dedicated thread. HTTP handlers send commands
@@ -73,35 +73,64 @@ playlist URL (.pls)
 
 | Concern            | Choice                            | Notes |
 |--------------------|-----------------------------------|-------|
-| Streaming + decode | `ffmpeg-next`                     | Safe wrapper over libav*. Maintenance-mode but kept compiling against FFmpeg 3.4–8.0, so it works with whatever Raspberry Pi OS ships. ~1.3M downloads/month. Alternative if we hit a wall: `rsmpeg` (actively developed, thinner/rawer API). |
+| Streaming + decode | `ffmpeg-next`                     | Safe wrapper over libav*. Maintenance-mode but kept compiling against FFmpeg 3.4–8.0, so it works with whatever Raspberry Pi OS ships (trixie: 7.1). Features trimmed to `codec`/`format`/`software-resampling` so libavfilter/libavdevice are not needed on the Pi. Alternative if we hit a wall: `rsmpeg`. |
 | ALSA output        | `alsa` crate (libasound bindings) | Use `plughw:...` so ALSA converts rate/format if needed. Behind an `AudioSink` trait: ALSA is Linux-only, and a dev sink keeps macOS builds/tests green and makes the gain clamp assertable in tests. |
 | HTTP server        | `tiny_http`                       | The API is tiny; a small threaded server beats pulling in tokio/axum on a single ARMv6 core. |
 | HTTP client        | `ureq`                            | Only for fetching the `.pls` (a 5-line INI we parse by hand). |
 | Config             | `serde` + `toml`                  | |
+| Packaging          | `cargo-deb` (daemon), `dpkg-deb` (website) | See "Packaging & deployment" below. |
 
 ### Build & runtime dependencies
 
-- Runtime (apt, Raspberry Pi OS): `libavformat`, `libavcodec`, `libavutil`,
-  `libswresample`, `libasound2`. We link dynamically against the distro
-  libraries.
+- Runtime: the distro's shared libraries (trixie: `libavformat61`,
+  `libavcodec61`, `libavutil59`, `libswresample5`, `libasound2t64`) —
+  linked dynamically and declared as .deb Depends, so `apt install` pulls
+  them.
 - Build time: FFmpeg dev headers + libclang (the sys crates run bindgen).
-  Building on the Pi Zero itself (one ARMv6 core, 512 MB) is a non-starter;
-  we cross-compile for `arm-unknown-linux-gnueabihf` against a Raspberry
-  Pi OS sysroot. Settled in the deployment milestone.
+  Building on the Pi Zero itself (one ARMv6 core, 512 MB) is a non-starter.
+  `service/build-pi.sh` cross-compiles for `arm-unknown-linux-gnueabihf`
+  against a **sysroot rsynced from the Pi itself** (exact soname/symbol
+  match), from any Debian environment — the Debian PC or a Docker container
+  (milestone 6 was built from a container on the Mac). The script encodes
+  several hardware-won gotchas (ARMv7 leakage from the cross toolchain,
+  Raspbian's vendor pixel formats, trixie sysroot quirks) — documented in
+  `service/README.md`.
 - Environments (details in CLAUDE.md): primary development on macOS
   (everything except the ALSA sink builds and tests there); a Debian PC —
-  attached to the actual speakers — for real-ALSA integration testing over
-  SSH and as the likely host for the ARMv6 cross-build; the Pi Zero is a
-  deployment target only.
+  attached to the actual speakers — for real-ALSA integration testing;
+  the Pi Zero only ever runs the release packages.
+
+### Packaging & deployment
+
+Both components ship as Debian packages; distribution is scp +
+`apt install ./<deb>` (see the top-level README for the commands):
+
+- **`radiod_<version>_armhf.deb`** (cargo-deb, via `build-pi.sh deb`):
+  `/usr/bin/radiod`, a systemd unit (dedicated `radio` system user in the
+  `audio` group, `Restart=always`, hardening) enabled and started on
+  install, `/etc/radio/config.toml` as a conffile so upgrades never
+  clobber local edits, and Depends pinned to the Pi's package names.
+- **`radio-website_<version>_all.deb`** (dpkg-deb, via
+  `deploy/build-website-deb.sh`): the site under `/var/www/radio`
+  (`lib/` outside the docroot), a lighttpd conf-available snippet riding
+  Debian's own version-independent php-fpm wiring, and a php-fpm pool
+  override (`pm = static`, `pm.max_children = 2` — 512 MB shared with the
+  daemon) installed per PHP version at postinst time.
+
+Measured on the Pi Zero: ~7% CPU and ~30 MB RSS while playing; page loads
+in ~0.3 s; everything comes back by itself after a reboot.
 
 ### Configuration
 
-TOML file, path via `--config` (default `/etc/radio/config.toml`):
+TOML file, path via `--config` (default `/etc/radio/config.toml`; the
+radiod package ships a documented example there as a conffile). All fields
+optional:
 
 ```toml
-listen = "127.0.0.1:8080"
-audio_device = "plughw:1,0"   # ALSA device
+listen = "127.0.0.1:8080"     # must be loopback
+audio_device = "plughw:0,0"   # ALSA device (aplay -l)
 max_volume = 50               # hard cap, defaults to 50 if omitted
+initial_volume = 50           # startup volume, a percentage of max_volume
 ```
 
 ### REST API
@@ -109,10 +138,10 @@ max_volume = 50               # hard cap, defaults to 50 if omitted
 | Method & path    | Body                          | Effect |
 |------------------|-------------------------------|--------|
 | `GET  /status`   | —                             | Full status (below). |
-| `POST /play`     | `{"playlist_url": "https://…/defcon.pls"}` | Resolve playlist, start playing. Switching stations is just another `/play`. |
+| `POST /play`     | `{"playlist_url": "https://…/defcon.pls"}` | Resolve playlist, start playing. Switching stations is just another `/play`; playing the already-playing playlist is a no-op, and `/play` for the currently-paused playlist resumes it. |
 | `POST /stop`     | —                             | Stop playback entirely. |
-| `POST /pause`    | —                             | Stop pulling the stream, remember what was playing. |
-| `POST /resume`   | —                             | Reconnect to the remembered stream. |
+| `POST /pause`    | —                             | Disconnect, remember what was playing. 409 when stopped; no-op when already paused. |
+| `POST /resume`   | —                             | Reconnect to the remembered stream. 409 when stopped; no-op when already playing. |
 | `POST /volume`   | `{"volume": 30}`              | 0–100, a percentage of `max_volume` (100 = the cap; with `max_volume = 30`, request 100 → effective 30). Response returns the effective value. |
 | `POST /mute`     | —                             | Gain to 0, remember volume. |
 | `POST /unmute`   | —                             | Restore volume. |
@@ -142,16 +171,20 @@ footprint. Lives in `website/`.
 - Fetches `https://api.somafm.com/channels.json` server-side and caches it on
   disk (e.g. 5-minute TTL) so we don't hammer SomaFM and pages stay fast on
   the Pi.
-- Lists channels (title, description, listeners); each has a **Play** button
-  that POSTs to the PHP backend, which forwards the channel's `.pls` URL to
-  `radiod` on `127.0.0.1`. The browser never talks to the daemon directly.
-- A status area showing `GET /status` (station, icy-title, volume) plus
-  pause/resume, mute, and volume controls — all proxied through PHP.
-- Start with functional, unstyled HTML (forms + full-page reloads are fine).
-  Styling and JS niceties (auto-refreshing now-playing) come later.
-- Serving: start with `php -S 0.0.0.0:8000` for development on the Pi;
-  production setup is lighttpd or nginx + php-fpm (decided in the deployment
-  step).
+- Lists channels (artwork, title, genre, description, listeners, sorted by
+  listeners) with a **Play** button per channel. Play forms submit channel
+  *ids*; the server resolves the `.pls` URL from its own cached channel
+  data, so the browser never feeds URLs to the daemon — and never talks to
+  the daemon at all.
+- A status area showing `GET /status` (state, station, icy-title, volume)
+  plus pause/resume, stop, mute, and volume controls — all proxied through
+  PHP, POST-redirect-GET throughout, all external data escaped.
+- Functional, unstyled HTML (forms + full-page reloads). Styling and JS
+  niceties (auto-refreshing now-playing) are the remaining polish
+  milestone.
+- Serving: `php -S` for development; in production lighttpd + php-fpm,
+  installed and wired by the `radio-website` package (port 80 on the LAN —
+  the one intentionally reachable piece).
 
 ## Repository layout
 
@@ -160,6 +193,8 @@ Monorepo with the two components as top-level directories:
 ```
 service/      Rust daemon (cargo project; the binary is named radiod)
 website/      PHP website
+deploy/       packaging: systemd unit, config example, maintainer scripts,
+              the website .deb build script
 notes/        long-lived notes, this plan
 plans/        per-step implementation plans (YYYYMMDD-NN-slug.md)
 ```
@@ -169,32 +204,37 @@ plans/        per-step implementation plans (YYYYMMDD-NN-slug.md)
 Each milestone gets its own `plans/YYYYMMDD-NN-slug.md` and lands via one or
 more PRs (see CLAUDE.md for the workflow).
 
-1. **Daemon skeleton** — cargo project under `service/`, config loading with
-   defaults (`max_volume = 50`), tiny_http server on `127.0.0.1`, `/status`
-   returning stubbed state, unit tests for config + volume clamping.
-2. **Playback** — `.pls` fetch/parse, ffmpeg-next open/decode/resample
-   pipeline, ALSA output; `/play` and `/stop` work end to end on the Pi.
-3. **Volume & mute** — software gain with the hard cap applied to every
-   sample buffer, `/volume`, `/mute`, `/unmute`; the clamp logic thoroughly
-   unit-tested.
-4. **Metadata & pause/resume** — ICY metadata (`icy_metadata_packet` →
-   `icy_title`, `icy_metadata_headers` → `icy_name`) surfaced in `/status`;
-   `/pause` and `/resume` (disconnect/reconnect semantics);
-   reconnect-with-backoff on stream errors.
-5. **Website v1** — PHP channel list from cached `channels.json`, play
-   buttons, status display, basic controls. Functional, unstyled.
-6. **Deployment** — cross-compilation notes (ARMv6 target) or on-device
-   build, systemd unit for `radiod`, web server setup, install docs.
-7. **Polish (later)** — styling the site, auto-refreshing now-playing,
+1. ✅ **Daemon skeleton** — cargo project under `service/`, config loading
+   with defaults, tiny_http server on `127.0.0.1`, stubbed `/status`,
+   unit tests for config + volume math.
+2. ✅ **Playback** — `.pls` fetch/parse, ffmpeg-next open/decode/resample
+   pipeline behind a `Source` trait, `AudioSink` trait (ALSA / WAV / null),
+   `/play` and `/stop` end to end on real hardware.
+3. ✅ **Volume & mute** — `/volume` (a percentage of `max_volume`, revised
+   during implementation), `/mute`, `/unmute`; the bound proven by
+   exhaustive and end-to-end tests.
+4. ✅ **Metadata & pause/resume** — `icy_title`/`icy_name` in `/status`
+   (the mpv `av_opt_get` mechanism), pause/resume as a player state
+   machine, reconnect-with-backoff so dropped streams keep playing.
+5. ✅ **Website v1** — PHP channel list from cached `channels.json` with
+   artwork, play buttons, status display, all controls. Functional,
+   unstyled.
+6. ✅ **Deployment** — `build-pi.sh` ARMv6 cross-compile (sysroot from the
+   Pi), the two Debian packages (`radiod_armhf.deb` with systemd unit and
+   conffile, `radio-website_all.deb` with lighttpd + php-fpm), install via
+   `apt install ./<deb>`. Verified on the office Pi: reboot-proof, ~7%
+   CPU, flat memory over a soak.
+7. **Polish (remaining)** — styling the site, auto-refreshing now-playing,
    maybe favorites/presets.
 
-## Open questions
+## Formerly open questions, answered along the way
 
-- Exact ALSA device name on the actual Pi (`hw:1,0` vs `plughw:1,0` vs a
-  named device) — confirm on hardware during milestone 2.
-- Which FFmpeg version ships in the Raspberry Pi OS release on the device
-  (`ffmpeg-next` compiles against 3.4–8.0, so this should only matter for
-  pinning the crate feature flags) — confirm during milestone 2.
-- Exact cross-compilation setup (sysroot vs. build-on-a-Pi-4) — settled in
-  the deployment milestone, but worth a spike early since milestone 2 needs
-  a binary running on the Pi.
+- ALSA device on the office Pi: the USB speakers are card 0 →
+  `plughw:0,0` (the packaged config default).
+- The Pi runs Raspbian trixie: FFmpeg 7.1, PHP 8.4 — both fine for the
+  chosen stack.
+- Cross-compilation: sysroot-from-the-Pi, buildable from the Debian PC or
+  a Docker container (no Pi 4 needed). The gotchas live in
+  `service/build-pi.sh` and `service/README.md`.
+- License for the packages: still Stefan's call (`license` is unset in
+  `Cargo.toml`; cargo-deb warns).
