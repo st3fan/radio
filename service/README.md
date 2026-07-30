@@ -55,6 +55,8 @@ initial_volume = 50           # percentage of max_volume (50 = half the cap)
 
 ## API
 
+Full reference: `../notes/api.md`. Quick start:
+
 ```
 curl http://127.0.0.1:8080/status
 curl -X POST http://127.0.0.1:8080/play -d '{"playlist_url": "https://somafm.com/defcon.pls"}'
