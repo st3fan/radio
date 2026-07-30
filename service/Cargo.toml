@@ -5,7 +5,18 @@ edition = "2024"
 rust-version = "1.97"
 
 [dependencies]
+# Only the libraries we use: avformat (format), avcodec (codec), and
+# swresample. Keeps libavfilter/libavdevice off the Pi.
+ffmpeg-next = { version = "8.1.0", default-features = false, features = [
+    "codec",
+    "format",
+    "software-resampling",
+] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tiny_http = "0.12"
 toml = "0.8"
+ureq = "3.3.0"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+alsa = "0.9"
