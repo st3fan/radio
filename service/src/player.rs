@@ -18,6 +18,21 @@ pub enum Command {
         stream_url: String,
     },
     Stop,
+    Pause,
+    Resume,
+}
+
+/// What is (or was) playing. Kept across pause so resume can reconnect.
+#[derive(Debug, Clone)]
+struct Station {
+    playlist_url: String,
+    stream_url: String,
+}
+
+enum Session {
+    Idle,
+    Playing(Station),
+    Paused(Station),
 }
 
 /// Handle used by the HTTP server to control the player thread.
@@ -52,30 +67,58 @@ fn run(
     mut sink: Box<dyn AudioSink>,
     source_factory: &SourceFactory,
 ) {
-    let mut next = rx.recv().ok();
-    while let Some(command) = next.take() {
-        match command {
-            Command::Stop => {
-                next = rx.recv().ok();
-            }
-            Command::Play {
-                playlist_url,
-                stream_url,
-            } => {
-                next = play(
-                    rx,
-                    status,
-                    sink.as_mut(),
-                    source_factory,
-                    playlist_url,
-                    stream_url,
-                );
-                set_stopped(status);
-                if next.is_none() {
-                    next = rx.recv().ok();
+    let mut session = Session::Idle;
+    loop {
+        session = match session {
+            Session::Playing(station) => {
+                match play(rx, status, sink.as_mut(), source_factory, &station) {
+                    Some(command) => transition(command, Session::Playing(station), status),
+                    // Open failure, source end, or sink failure. Milestone 4
+                    // phase 2 replaces this with reconnect-and-backoff.
+                    None => {
+                        set_stopped(status);
+                        Session::Idle
+                    }
                 }
             }
+            idle_or_paused => {
+                let Ok(command) = rx.recv() else { return };
+                transition(command, idle_or_paused, status)
+            }
+        };
+    }
+}
+
+/// Applies a command to the current session. The only writer of pause/stop
+/// status transitions; `play()` itself sets `playing`.
+fn transition(command: Command, session: Session, status: &Mutex<Status>) -> Session {
+    match command {
+        Command::Play {
+            playlist_url,
+            stream_url,
+        } => Session::Playing(Station {
+            playlist_url,
+            stream_url,
+        }),
+        Command::Stop => {
+            set_stopped(status);
+            Session::Idle
         }
+        Command::Pause => match session {
+            // Keep the station so resume can reconnect; the URLs stay in
+            // the status too.
+            Session::Playing(station) | Session::Paused(station) => {
+                set_paused(status);
+                Session::Paused(station)
+            }
+            Session::Idle => Session::Idle,
+        },
+        Command::Resume => match session {
+            // From Playing this only happens when a Resume interrupted the
+            // play loop; the pipeline was torn down, so just restart it.
+            Session::Playing(station) | Session::Paused(station) => Session::Playing(station),
+            Session::Idle => Session::Idle,
+        },
     }
 }
 
@@ -86,10 +129,10 @@ fn play(
     status: &Mutex<Status>,
     sink: &mut dyn AudioSink,
     source_factory: &SourceFactory,
-    playlist_url: String,
-    stream_url: String,
+    station: &Station,
 ) -> Option<Command> {
-    let mut source = match source_factory(&stream_url) {
+    let stream_url = station.stream_url.as_str();
+    let mut source = match source_factory(stream_url) {
         Ok(source) => source,
         Err(err) => {
             eprintln!("radiod: cannot open {stream_url}: {err}");
@@ -104,8 +147,8 @@ fn play(
     {
         let mut status = status.lock().expect("status lock poisoned");
         status.state = State::Playing;
-        status.playlist_url = Some(playlist_url);
-        status.stream_url = Some(stream_url.clone());
+        status.playlist_url = Some(station.playlist_url.clone());
+        status.stream_url = Some(station.stream_url.clone());
     }
 
     let mut buf = vec![0i16; CHUNK_SAMPLES];
@@ -149,6 +192,13 @@ fn set_stopped(status: &Mutex<Status>) {
     status.state = State::Stopped;
     status.playlist_url = None;
     status.stream_url = None;
+}
+
+/// Paused keeps the station URLs visible — that is the difference from
+/// stopped.
+fn set_paused(status: &Mutex<Status>) {
+    let mut status = status.lock().expect("status lock poisoned");
+    status.state = State::Paused;
 }
 
 #[cfg(test)]
@@ -255,6 +305,109 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         assert_eq!(status.lock().unwrap().state, State::Stopped);
         assert!(sink.samples.lock().unwrap().is_empty());
+    }
+
+    fn counting_sine_factory() -> (SourceFactory, Arc<Mutex<u32>>) {
+        let opens = Arc::new(Mutex::new(0u32));
+        let counter = opens.clone();
+        let factory: SourceFactory = Box::new(move |_| {
+            *counter.lock().unwrap() += 1;
+            Ok(Box::new(SineSource::new()))
+        });
+        (factory, opens)
+    }
+
+    fn start_playing(player: &Player, status: &Arc<Mutex<Status>>) {
+        player.send(Command::Play {
+            playlist_url: "https://example.com/test.pls".to_string(),
+            stream_url: "https://example.com/stream".to_string(),
+        });
+        wait_for(|| status.lock().unwrap().state == State::Playing);
+    }
+
+    #[test]
+    fn pause_keeps_station_and_closes_sink() {
+        let status = playing_status("");
+        let sink = TestSink::default();
+        let player = spawn(status.clone(), Box::new(sink.clone()), sine_factory());
+        start_playing(&player, &status);
+
+        player.send(Command::Pause);
+        wait_for(|| status.lock().unwrap().state == State::Paused);
+        {
+            let status = status.lock().unwrap();
+            assert_eq!(
+                status.playlist_url.as_deref(),
+                Some("https://example.com/test.pls")
+            );
+            assert_eq!(
+                status.stream_url.as_deref(),
+                Some("https://example.com/stream")
+            );
+        }
+        wait_for(|| *sink.closed.lock().unwrap());
+    }
+
+    #[test]
+    fn resume_reconnects_to_the_remembered_station() {
+        let status = playing_status("");
+        let sink = TestSink::default();
+        let (factory, opens) = counting_sine_factory();
+        let player = spawn(status.clone(), Box::new(sink.clone()), factory);
+        start_playing(&player, &status);
+        assert_eq!(*opens.lock().unwrap(), 1);
+
+        player.send(Command::Pause);
+        wait_for(|| status.lock().unwrap().state == State::Paused);
+
+        player.send(Command::Resume);
+        wait_for(|| status.lock().unwrap().state == State::Playing);
+        assert_eq!(*opens.lock().unwrap(), 2);
+        assert_eq!(
+            status.lock().unwrap().stream_url.as_deref(),
+            Some("https://example.com/stream")
+        );
+
+        player.send(Command::Stop);
+        wait_for(|| status.lock().unwrap().state == State::Stopped);
+    }
+
+    #[test]
+    fn play_while_paused_switches_station() {
+        let status = playing_status("");
+        let sink = TestSink::default();
+        let player = spawn(status.clone(), Box::new(sink.clone()), sine_factory());
+        start_playing(&player, &status);
+
+        player.send(Command::Pause);
+        wait_for(|| status.lock().unwrap().state == State::Paused);
+
+        player.send(Command::Play {
+            playlist_url: "https://example.com/other.pls".to_string(),
+            stream_url: "https://example.com/other".to_string(),
+        });
+        wait_for(|| status.lock().unwrap().state == State::Playing);
+        assert_eq!(
+            status.lock().unwrap().playlist_url.as_deref(),
+            Some("https://example.com/other.pls")
+        );
+    }
+
+    #[test]
+    fn stop_while_paused_clears_station() {
+        let status = playing_status("");
+        let sink = TestSink::default();
+        let player = spawn(status.clone(), Box::new(sink.clone()), sine_factory());
+        start_playing(&player, &status);
+
+        player.send(Command::Pause);
+        wait_for(|| status.lock().unwrap().state == State::Paused);
+
+        player.send(Command::Stop);
+        wait_for(|| status.lock().unwrap().state == State::Stopped);
+        let status = status.lock().unwrap();
+        assert_eq!(status.playlist_url, None);
+        assert_eq!(status.stream_url, None);
     }
 
     #[test]
