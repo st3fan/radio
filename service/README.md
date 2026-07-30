@@ -48,9 +48,9 @@ Config file (all fields optional):
 
 ```toml
 listen = "127.0.0.1:8080"     # must be loopback
-audio_device = "plughw:1,0"   # ALSA device (used from milestone 2 phase 3)
+audio_device = "plughw:1,0"   # ALSA device
 max_volume = 50               # hard cap; the volume can never exceed this
-initial_volume = 25
+initial_volume = 50           # percentage of max_volume (50 = half the cap)
 ```
 
 ## API
@@ -59,7 +59,15 @@ initial_volume = 25
 curl http://127.0.0.1:8080/status
 curl -X POST http://127.0.0.1:8080/play -d '{"playlist_url": "https://somafm.com/defcon.pls"}'
 curl -X POST http://127.0.0.1:8080/stop
+curl -X POST http://127.0.0.1:8080/volume -d '{"volume": 30}'
+curl -X POST http://127.0.0.1:8080/mute
+curl -X POST http://127.0.0.1:8080/unmute
 ```
+
+Volume requests take 0–100 as a **percentage of `max_volume`**: 100 means
+"as loud as the cap allows", never louder. With `max_volume = 30`, a request
+of 100 yields an effective device volume of 30. Responses and `/status`
+always show the effective value.
 
 ## Checks
 

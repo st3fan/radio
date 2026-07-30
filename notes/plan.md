@@ -16,8 +16,9 @@ speakers. Two components:
   exceed a preconfigured maximum. Default maximum is **50** (on a 0–100
   scale). This is a safety invariant, not a preference — the Pi drives studio
   speakers. Every code path that produces audio must go through a single gain
-  function that clamps to this maximum. Requests to set a higher volume are
-  clamped, never rejected-then-forgotten.
+  function bounded by this maximum. User-facing volume values are a
+  percentage of `max_volume` (100 = the cap), so exceeding it is impossible
+  by construction.
 - **Hardware:** Pi Zero W 1.0 — single-core **ARMv6** (ARM1176, 32-bit),
   512 MB RAM. Keep CPU and memory use low, keep dependencies few, no heavy
   async runtimes if we can avoid them. Note: ARMv6, so the Rust target is
@@ -43,7 +44,7 @@ playlist URL (.pls)
   → avformat_open_input(stream URL)               (http: icy=1, reconnect on error)
   → av_read_frame → libavcodec decode → PCM
   → libswresample → s16 interleaved
-  → software gain: min(volume, max_volume) / 100, or 0 when muted   ← the clamp
+  → software gain: effective volume / 100, or 0 when muted   ← the bound
   → alsa crate → device (plughw:1,0)
 ```
 
@@ -52,8 +53,9 @@ playlist URL (.pls)
   mutex.
 - **Volume cap:** decoded PCM flows through our code, so the gain is applied
   by a single, unit-tested Rust function between decoder and ALSA — no
-  external process to trust. `min(volume, max_volume)` is the only path to
-  the sample multiplier.
+  external process to trust. `volume::effective_volume()` (mapping a 0–100
+  percentage onto `[0, max_volume]`) is the only path to the sample
+  multiplier.
 - **ICY metadata:** open the input with `icy=1` (default for http), then
   poll the `icy_metadata_packet` option on the format context
   (`av_opt_get` with `AV_OPT_SEARCH_CHILDREN`) and parse `StreamTitle='…'`.
@@ -111,7 +113,7 @@ max_volume = 50               # hard cap, defaults to 50 if omitted
 | `POST /stop`     | —                             | Stop playback entirely. |
 | `POST /pause`    | —                             | Stop pulling the stream, remember what was playing. |
 | `POST /resume`   | —                             | Reconnect to the remembered stream. |
-| `POST /volume`   | `{"volume": 30}`              | 0–100 requested; effective volume is clamped to `max_volume`. Response returns the effective value. |
+| `POST /volume`   | `{"volume": 30}`              | 0–100, a percentage of `max_volume` (100 = the cap; with `max_volume = 30`, request 100 → effective 30). Response returns the effective value. |
 | `POST /mute`     | —                             | Gain to 0, remember volume. |
 | `POST /unmute`   | —                             | Restore volume. |
 

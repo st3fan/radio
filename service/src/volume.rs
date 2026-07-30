@@ -4,9 +4,14 @@
 //! volume, and `gain` is the only way an effective volume becomes a sample
 //! multiplier. All gain applied to audio must flow through these functions.
 
-/// Clamps a requested volume (0–100) to the configured maximum.
+/// Maps a requested volume (0-100, a percentage of `max_volume`) onto the
+/// device scale: 100 means `max_volume`, 50 means half of it. The result can
+/// never exceed `max_volume` — the scale itself makes overshoot impossible.
 pub fn effective_volume(requested: u8, max_volume: u8) -> u8 {
-    requested.min(max_volume)
+    // Callers validate requested <= 100; cap defensively anyway.
+    let requested = u32::from(requested.min(100));
+    let scaled = (requested * u32::from(max_volume) + 50) / 100;
+    scaled as u8
 }
 
 /// Converts an effective volume into a sample multiplier. Muted always wins.
@@ -34,20 +39,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn effective_volume_below_max_is_unchanged() {
-        assert_eq!(effective_volume(30, 50), 30);
-    }
-
-    #[test]
-    fn effective_volume_at_max_is_unchanged() {
-        assert_eq!(effective_volume(50, 50), 50);
-    }
-
-    #[test]
-    fn effective_volume_above_max_is_clamped() {
-        assert_eq!(effective_volume(80, 50), 50);
+    fn effective_volume_is_a_percentage_of_max() {
         assert_eq!(effective_volume(100, 50), 50);
-        assert_eq!(effective_volume(255, 50), 50);
+        assert_eq!(effective_volume(50, 50), 25);
+        assert_eq!(effective_volume(80, 50), 40);
+        assert_eq!(effective_volume(100, 30), 30);
+        assert_eq!(effective_volume(50, 30), 15);
+        assert_eq!(effective_volume(10, 50), 5);
+    }
+
+    #[test]
+    fn effective_volume_rounds_to_nearest() {
+        assert_eq!(effective_volume(25, 50), 13); // 12.5 rounds up
+        assert_eq!(effective_volume(24, 50), 12);
+        assert_eq!(effective_volume(1, 30), 0); // 0.3 rounds down
+        assert_eq!(effective_volume(5, 30), 2); // 1.5 rounds up
     }
 
     #[test]
@@ -58,6 +64,30 @@ mod tests {
     #[test]
     fn effective_volume_with_zero_max_is_silent() {
         assert_eq!(effective_volume(100, 0), 0);
+        assert_eq!(effective_volume(50, 0), 0);
+    }
+
+    #[test]
+    fn effective_volume_never_exceeds_max_for_any_input() {
+        for max_volume in [0u8, 1, 30, 50, 100] {
+            for requested in 0..=u8::MAX {
+                let effective = effective_volume(requested, max_volume);
+                assert!(
+                    effective <= max_volume,
+                    "requested {requested} max {max_volume} -> {effective}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn effective_volume_is_monotonic_in_request() {
+        let mut previous = effective_volume(0, 50);
+        for requested in 1..=100 {
+            let current = effective_volume(requested, 50);
+            assert!(current >= previous);
+            previous = current;
+        }
     }
 
     #[test]
@@ -80,11 +110,12 @@ mod tests {
     }
 
     #[test]
-    fn gain_through_clamp_never_exceeds_max() {
-        let max_volume = 50;
-        for requested in 0..=u8::MAX {
-            let g = gain(effective_volume(requested, max_volume), false);
-            assert!(g <= f32::from(max_volume) / 100.0);
+    fn gain_through_scaling_never_exceeds_max() {
+        for max_volume in [0u8, 30, 50, 100] {
+            for requested in 0..=u8::MAX {
+                let g = gain(effective_volume(requested, max_volume), false);
+                assert!(g <= f32::from(max_volume) / 100.0);
+            }
         }
     }
 
