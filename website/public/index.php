@@ -91,10 +91,16 @@ if ($status !== null && $status['state'] === 'playing') {
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Radio</title>
 <link rel="stylesheet" href="style.css">
 <script src="radio.js" defer></script>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="theme-color" content="#050805">
+<meta name="apple-mobile-web-app-title" content="RADIO">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 </head>
 <body>
 
