@@ -273,13 +273,70 @@ protocol with tight timing.
    what the loopback design gives us naturally, since `radiod` sees both
    sources and can implement the policy.
 
-**Open questions:** does AirPlay 2 even fit on this hardware? Does a Pi
-Zero W's WiFi hold up? Is the added latency of a loopback acceptable (for
-music, yes; nobody is playing games through this).
+**Open questions:** does a Pi Zero W's WiFi hold up? Is the added latency of a
+loopback acceptable (for music, yes; nobody is playing games through this).
 
 **Effort:** large, and it changes the audio architecture. Prototype
 `shairport-sync` standalone on the Debian PC first and just *listen* before
 designing anything.
+
+### Explore AirPlay 2 specifically
+
+AirPlay 1 vs 2 is not a version bump you can defer — they have different
+dependencies, different CPU costs, and different *value*, so it's worth
+deciding deliberately rather than taking whatever the package gives us.
+
+**What AirPlay 2 buys over AirPlay 1:**
+
+- **It shows up in the Apple Home app.** AirPlay 2 speakers appear as Home
+  accessories, which means Siri and automations without implementing HomeKit
+  or Matter ourselves. If the underlying want is "control it from Apple
+  stuff", this may be the cheapest route on the whole list — cheaper than
+  either option in the Matter entry above. Worth weighing them against each
+  other rather than treating them as unrelated ideas.
+- Grouping with other AirPlay 2 speakers and HomePods (multi-room, for free,
+  from someone else's clock-sync implementation — see the multi-room bullet
+  at the bottom).
+- Buffered audio rather than realtime streaming, which should be *kinder* to
+  flaky WiFi than AirPlay 1, not harsher.
+
+**What it costs:** `shairport-sync` needs to be built with AirPlay 2 support
+plus **`nqptp`**, a separate PTP timing daemon that wants exclusive use of UDP
+ports 319/320 and runs as its own service. The dependency list grows
+(libplist, libsodium, and AAC decoding — though we already link FFmpeg). The
+Debian package may or may not be built with AirPlay 2 enabled, so this could
+mean building it ourselves, which in turn means it stops being "just apt
+install".
+
+**The question that decides it: does it run on a Pi Zero W 1.0?** My
+understanding is that AirPlay 2 in `shairport-sync` is substantially heavier
+than AirPlay 1 and that the original single-core Zero W is at best marginal —
+but that's recollection, not measurement, and the project's own README is
+explicit about supported hardware. **Read that first**; it may answer the whole
+question in five minutes and save the spike entirely.
+
+**If it doesn't fit, there are two honest outs**, and neither is a failure:
+
+1. **Ship AirPlay 1.** It's cheap, it works, and "play whatever is on my
+   phone" — the actual want — is fully satisfied by it. The Home-app trick is
+   lost, but the Home Assistant route covers a lot of that ground.
+2. **Change the board.** A Pi Zero 2 W is quad-core, a few dollars, and runs
+   our existing 32-bit armhf binaries unmodified (ARMv6 code runs fine on
+   it) — so it costs a re-flash, not a port. If AirPlay 2 turns out to be the
+   one feature the hardware can't do, that's a hardware answer, not a reason
+   to spend weeks optimising. Worth noting the constraint in `CLAUDE.md` is
+   "Pi Zero W 1.0" because that's the box on the desk, not because ARMv6 is
+   sacred.
+
+**The spike, in order:** read the `shairport-sync` docs on AirPlay 2 hardware
+requirements → if plausible, build it on the Debian PC and confirm the
+experience is actually good (does it appear in Home? does grouping work?) →
+only then try it on the Pi Zero and measure CPU, dropouts and stability over
+an hour → and only then design the loopback integration above. Stop at
+whichever step says no.
+
+**Effort:** an afternoon to know the answer. The build-it-ourselves and
+`nqptp`-packaging tail is real work if it passes.
 
 ---
 
@@ -375,11 +432,13 @@ anything else on this list:
 
 - If the goal is **Home Assistant**, the MPD route above is a fraction of the
   work and gives a proper media player entity. Matter buys nothing here.
-- If the goal is **Apple Home specifically**, HomeKit's own accessory protocol
-  is far more tractable for a non-commercial project (Homebridge already does
-  this, and there are HAP libraries) — with the same caveat that HomeKit has
-  no real "radio" accessory type either, so it'd be a switch-plus-slider
-  fiction.
+- If the goal is **Apple Home specifically**, two cheaper routes exist. An
+  AirPlay 2 speaker appears in the Home app on its own (see the AirPlay entry
+  above) — no protocol work by us at all, if the hardware can run it. Failing
+  that, HomeKit's own accessory protocol is far more tractable for a
+  non-commercial project (Homebridge already does this, and there are HAP
+  libraries) — with the same caveat that HomeKit has no real "radio" accessory
+  type either, so it'd be a switch-plus-slider fiction.
 - If the goal is **"my phone can control it from anywhere in the house"**, the
   website already does that, and a physical knob (below) may be the better
   answer to the underlying want.
