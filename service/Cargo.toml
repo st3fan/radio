@@ -3,6 +3,7 @@ name = "radiod"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
+description = "Internet radio daemon with an HTTP API and a hard volume cap"
 
 [dependencies]
 # Only the libraries we use: avformat (format), avcodec (codec), and
@@ -20,3 +21,29 @@ ureq = "3.3.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 alsa = "0.9"
+
+# .deb packaging for the Pi (cargo deb --target arm-unknown-linux-gnueabihf,
+# via ./build-pi.sh deb). Depends are pinned to Raspbian trixie's package
+# names; cargo-deb's automatic shlibdeps is unreliable for cross builds.
+[package.metadata.deb]
+name = "radiod"
+maintainer = "Stefan Arentz <stefan.arentz@gmail.com>"
+copyright = "2026 Stefan Arentz"
+extended-description = """\
+Internet radio daemon: plays an icecast stream (from a .pls playlist URL, \
+e.g. SomaFM) to an ALSA device, controlled over an HTTP API on loopback. \
+The output level is hard-capped by the max_volume setting."""
+section = "sound"
+priority = "optional"
+depends = "libavformat61, libavcodec61, libavutil59, libswresample5, libasound2t64, libc6"
+assets = [
+    ["target/release/radiod", "usr/bin/", "755"],
+    ["../deploy/config.toml.example", "etc/radio/config.toml", "644"],
+]
+conf-files = ["/etc/radio/config.toml"]
+maintainer-scripts = "../deploy/debian"
+
+[package.metadata.deb.systemd-units]
+unit-scripts = "../deploy"
+enable = true
+start = true

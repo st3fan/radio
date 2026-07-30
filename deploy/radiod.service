@@ -1,0 +1,20 @@
+[Unit]
+Description=Radio internet radio daemon
+Documentation=https://github.com/st3fan/radio
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/radiod --config /etc/radio/config.toml
+User=radio
+Group=radio
+SupplementaryGroups=audio
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
