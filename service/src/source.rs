@@ -1,8 +1,7 @@
-//! Audio sources. Phase 1 has only the built-in sine test source; the FFmpeg
-//! stream pipeline arrives in phase 2 as another `Source` implementation.
+//! The `Source` abstraction. Production uses `pipeline::FfmpegSource`; the
+//! built-in sine source below is test-only.
 
 use std::fmt;
-use std::time::{Duration, Instant};
 
 use crate::sink::AudioSpec;
 
@@ -26,21 +25,20 @@ pub trait Source: Send {
 }
 
 /// Builds a source for a stream URL. Injected into the player so tests can
-/// substitute their own sources; phase 2 provides the FFmpeg factory.
+/// substitute their own sources; production wires in the FFmpeg pipeline.
 pub type SourceFactory = Box<dyn Fn(&str) -> Result<Box<dyn Source>, SourceError> + Send>;
 
-/// A 440 Hz sine tone at full scale. Paces itself to real time so a `/play`
-/// into the WAV sink does not fill the disk at CPU speed.
+/// A 440 Hz sine tone at full scale, for tests.
+#[cfg(test)]
 pub struct SineSource {
     spec: AudioSpec,
     frequency: f32,
     position: u64,
-    started: Option<Instant>,
-    paced: bool,
 }
 
+#[cfg(test)]
 impl SineSource {
-    pub fn new(paced: bool) -> SineSource {
+    pub fn new() -> SineSource {
         SineSource {
             spec: AudioSpec {
                 rate: 44100,
@@ -48,12 +46,11 @@ impl SineSource {
             },
             frequency: 440.0,
             position: 0,
-            started: None,
-            paced,
         }
     }
 }
 
+#[cfg(test)]
 impl Source for SineSource {
     fn spec(&self) -> AudioSpec {
         self.spec
@@ -71,18 +68,6 @@ impl Source for SineSource {
             }
         }
         self.position += frames as u64;
-
-        if self.paced {
-            // Sleep until the samples produced so far have "played out".
-            let started = *self.started.get_or_insert_with(Instant::now);
-            let produced =
-                Duration::from_secs_f64(self.position as f64 / f64::from(self.spec.rate));
-            let elapsed = started.elapsed();
-            if produced > elapsed {
-                std::thread::sleep(produced - elapsed);
-            }
-        }
-
         Ok(frames * channels)
     }
 }
@@ -93,7 +78,7 @@ mod tests {
 
     #[test]
     fn sine_fills_buffer_at_full_scale() {
-        let mut source = SineSource::new(false);
+        let mut source = SineSource::new();
         let mut buf = vec![0i16; 4410 * 2];
         let n = source.read(&mut buf).unwrap();
         assert_eq!(n, buf.len());
@@ -104,7 +89,7 @@ mod tests {
 
     #[test]
     fn sine_writes_identical_samples_to_both_channels() {
-        let mut source = SineSource::new(false);
+        let mut source = SineSource::new();
         let mut buf = vec![0i16; 64];
         source.read(&mut buf).unwrap();
         for frame in buf.chunks(2) {
@@ -114,11 +99,11 @@ mod tests {
 
     #[test]
     fn sine_is_continuous_across_reads() {
-        let mut one = SineSource::new(false);
+        let mut one = SineSource::new();
         let mut big = vec![0i16; 128];
         one.read(&mut big).unwrap();
 
-        let mut two = SineSource::new(false);
+        let mut two = SineSource::new();
         let mut first = vec![0i16; 64];
         let mut second = vec![0i16; 64];
         two.read(&mut first).unwrap();

@@ -1,4 +1,5 @@
 mod config;
+mod pipeline;
 mod player;
 mod pls;
 mod server;
@@ -12,8 +13,9 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use config::Config;
+use pipeline::FfmpegSource;
 use sink::{AudioSink, NullSink, WavSink};
-use source::{SineSource, Source, SourceError};
+use source::{Source, SourceError};
 use status::Status;
 
 const USAGE: &str = "usage: radiod [--config <path>] [--sink null|wav:<path>] [-v | --version]";
@@ -77,10 +79,8 @@ fn make_sink(args: &Args) -> Result<Box<dyn AudioSink>, String> {
     }
 }
 
-/// Phase 1: every stream URL "plays" the built-in test tone. Phase 2
-/// replaces this with the FFmpeg pipeline.
-fn make_source(_stream_url: &str) -> Result<Box<dyn Source>, SourceError> {
-    Ok(Box::new(SineSource::new(true)))
+fn make_source(stream_url: &str) -> Result<Box<dyn Source>, SourceError> {
+    Ok(Box::new(FfmpegSource::open(stream_url)?))
 }
 
 fn main() -> ExitCode {

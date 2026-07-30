@@ -170,7 +170,7 @@ mod tests {
     }
 
     fn sine_factory() -> SourceFactory {
-        Box::new(|_| Ok(Box::new(SineSource::new(false))))
+        Box::new(|_| Ok(Box::new(SineSource::new())))
     }
 
     fn playing_status(config_toml: &str) -> Arc<Mutex<Status>> {
