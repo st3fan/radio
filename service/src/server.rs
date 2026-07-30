@@ -105,7 +105,7 @@ mod tests {
         let player = player::spawn(
             status.clone(),
             Box::new(TestSink::default()),
-            Box::new(|_| Ok(Box::new(SineSource::new(false)))),
+            Box::new(|_| Ok(Box::new(SineSource::new()))),
         );
         App {
             status,
