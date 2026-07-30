@@ -208,6 +208,7 @@ pub mod testing {
     impl AudioSink for TestSink {
         fn open(&mut self, spec: AudioSpec) -> Result<(), SinkError> {
             *self.opened_with.lock().unwrap() = Some(spec);
+            *self.closed.lock().unwrap() = false;
             Ok(())
         }
 

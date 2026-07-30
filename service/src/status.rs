@@ -5,11 +5,7 @@ use crate::config::Config;
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum State {
-    // Playing and Paused are only constructed once playback lands in
-    // milestone 2, but they are part of the documented status shape now.
-    #[allow(dead_code)]
     Playing,
-    #[allow(dead_code)]
     Paused,
     Stopped,
 }

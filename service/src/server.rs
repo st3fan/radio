@@ -46,8 +46,15 @@ fn route(method: &Method, url: &str, body: &str, app: &App) -> (u16, String) {
                 Ok(request) => request,
                 Err(err) => return (400, error_body(&format!("invalid request body: {err}"))),
             };
-            if already_playing(app, &request.playlist_url) {
-                return (200, status_body(app));
+            match same_station_state(app, &request.playlist_url) {
+                // Already playing this playlist: no-op, don't interrupt.
+                Some(State::Playing) => return (200, status_body(app)),
+                // Paused on this playlist: /play means resume it.
+                Some(State::Paused) => {
+                    app.player.send(Command::Resume);
+                    return (200, status_body(app));
+                }
+                _ => {}
             }
             let stream_url = match (app.resolver)(&request.playlist_url) {
                 Ok(url) => url,
@@ -63,6 +70,22 @@ fn route(method: &Method, url: &str, body: &str, app: &App) -> (u16, String) {
             app.player.send(Command::Stop);
             (200, status_body(app))
         }
+        (Method::Post, "/pause") => match current_state(app) {
+            State::Playing => {
+                app.player.send(Command::Pause);
+                (200, status_body(app))
+            }
+            State::Paused => (200, status_body(app)),
+            State::Stopped => (409, error_body("nothing is playing")),
+        },
+        (Method::Post, "/resume") => match current_state(app) {
+            State::Paused => {
+                app.player.send(Command::Resume);
+                (200, status_body(app))
+            }
+            State::Playing => (200, status_body(app)),
+            State::Stopped => (409, error_body("nothing is playing")),
+        },
         (Method::Post, "/volume") => {
             let request: VolumeRequest = match serde_json::from_str(body) {
                 Ok(request) => request,
@@ -98,11 +121,16 @@ fn set_muted(app: &App, muted: bool) {
     status.muted = muted;
 }
 
-/// Playing a playlist that is already playing is a no-op — don't interrupt
-/// the stream (or re-fetch the playlist) just to start the same station.
-fn already_playing(app: &App, playlist_url: &str) -> bool {
+/// Returns the current state if the given playlist is the current station.
+/// Used to make /play a no-op (playing) or a resume (paused) for the same
+/// station instead of re-fetching the playlist and interrupting the stream.
+fn same_station_state(app: &App, playlist_url: &str) -> Option<State> {
     let status = app.status.lock().expect("status lock poisoned");
-    status.state == State::Playing && status.playlist_url.as_deref() == Some(playlist_url)
+    (status.playlist_url.as_deref() == Some(playlist_url)).then_some(status.state)
+}
+
+fn current_state(app: &App) -> State {
+    app.status.lock().expect("status lock poisoned").state
 }
 
 fn status_body(app: &App) -> String {
@@ -271,6 +299,116 @@ mod tests {
         assert_eq!(resolves.load(Ordering::SeqCst), 2);
         route(&Method::Post, "/stop", "", &app);
         wait_for_state(&app, State::Stopped);
+    }
+
+    #[test]
+    fn pause_and_resume_round_trip() {
+        let app = test_app(ok_resolver());
+        route(
+            &Method::Post,
+            "/play",
+            r#"{"playlist_url": "https://example.com/x.pls"}"#,
+            &app,
+        );
+        wait_for_state(&app, State::Playing);
+
+        let (code, _) = route(&Method::Post, "/pause", "", &app);
+        assert_eq!(code, 200);
+        wait_for_state(&app, State::Paused);
+        {
+            // Paused keeps the station visible — that's the contract.
+            let status = app.status.lock().unwrap();
+            assert_eq!(
+                status.playlist_url.as_deref(),
+                Some("https://example.com/x.pls")
+            );
+            assert_eq!(
+                status.stream_url.as_deref(),
+                Some("https://example.com/stream")
+            );
+        }
+
+        // Pause while paused: no-op 200.
+        let (code, _) = route(&Method::Post, "/pause", "", &app);
+        assert_eq!(code, 200);
+        assert_eq!(app.status.lock().unwrap().state, State::Paused);
+
+        let (code, _) = route(&Method::Post, "/resume", "", &app);
+        assert_eq!(code, 200);
+        wait_for_state(&app, State::Playing);
+
+        // Resume while playing: no-op 200.
+        let (code, _) = route(&Method::Post, "/resume", "", &app);
+        assert_eq!(code, 200);
+        assert_eq!(app.status.lock().unwrap().state, State::Playing);
+
+        route(&Method::Post, "/stop", "", &app);
+        wait_for_state(&app, State::Stopped);
+    }
+
+    #[test]
+    fn pause_and_resume_while_stopped_are_409() {
+        let app = test_app(ok_resolver());
+        for path in ["/pause", "/resume"] {
+            let (code, response) = route(&Method::Post, path, "", &app);
+            assert_eq!(code, 409, "path {path}");
+            let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+            assert_eq!(value["error"], "nothing is playing");
+        }
+    }
+
+    #[test]
+    fn play_same_playlist_while_paused_resumes_without_refetch() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let resolves = Arc::new(AtomicUsize::new(0));
+        let counter = resolves.clone();
+        let app = test_app(Box::new(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Ok("https://example.com/stream".to_string())
+        }));
+
+        let body = r#"{"playlist_url": "https://example.com/x.pls"}"#;
+        route(&Method::Post, "/play", body, &app);
+        wait_for_state(&app, State::Playing);
+        route(&Method::Post, "/pause", "", &app);
+        wait_for_state(&app, State::Paused);
+
+        // /play for the paused station resumes it; the playlist is not
+        // fetched again.
+        let (code, _) = route(&Method::Post, "/play", body, &app);
+        assert_eq!(code, 200);
+        wait_for_state(&app, State::Playing);
+        assert_eq!(resolves.load(Ordering::SeqCst), 1);
+
+        route(&Method::Post, "/stop", "", &app);
+        wait_for_state(&app, State::Stopped);
+    }
+
+    #[test]
+    fn play_different_playlist_while_paused_switches() {
+        let app = test_app(ok_resolver());
+        route(
+            &Method::Post,
+            "/play",
+            r#"{"playlist_url": "https://example.com/x.pls"}"#,
+            &app,
+        );
+        wait_for_state(&app, State::Playing);
+        route(&Method::Post, "/pause", "", &app);
+        wait_for_state(&app, State::Paused);
+
+        route(
+            &Method::Post,
+            "/play",
+            r#"{"playlist_url": "https://example.com/y.pls"}"#,
+            &app,
+        );
+        wait_for_state(&app, State::Playing);
+        assert_eq!(
+            app.status.lock().unwrap().playlist_url.as_deref(),
+            Some("https://example.com/y.pls")
+        );
     }
 
     #[test]
