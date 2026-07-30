@@ -11,8 +11,13 @@ pub const DEFAULT_CONFIG_PATH: &str = "/etc/radio/config.toml";
 const DEFAULT_LISTEN: &str = "127.0.0.1:8080";
 const DEFAULT_AUDIO_DEVICE: &str = "plughw:1,0";
 const DEFAULT_MAX_VOLUME: u8 = 50;
-const DEFAULT_INITIAL_VOLUME: u8 = 25;
+/// A percentage of `max_volume`, like every user-facing volume value.
+const DEFAULT_INITIAL_VOLUME: u8 = 50;
 
+/// Loaded configuration. Note: `initial_volume` in the file is a percentage
+/// of `max_volume` (100 = the cap); this struct stores the resulting
+/// *effective* device volume, which by construction never exceeds
+/// `max_volume`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub listen: SocketAddr,
@@ -27,7 +32,7 @@ impl Default for Config {
             listen: DEFAULT_LISTEN.parse().expect("default listen address"),
             audio_device: DEFAULT_AUDIO_DEVICE.to_string(),
             max_volume: DEFAULT_MAX_VOLUME,
-            initial_volume: DEFAULT_INITIAL_VOLUME,
+            initial_volume: volume::effective_volume(DEFAULT_INITIAL_VOLUME, DEFAULT_MAX_VOLUME),
         }
     }
 }
@@ -93,10 +98,12 @@ impl Config {
             )));
         }
 
-        let initial_volume = raw.initial_volume.unwrap_or(defaults.initial_volume);
-        if initial_volume > 100 {
+        // The file value is a percentage of max_volume; store the effective
+        // device volume.
+        let initial_percent = raw.initial_volume.unwrap_or(DEFAULT_INITIAL_VOLUME);
+        if initial_percent > 100 {
             return Err(ConfigError::Invalid(format!(
-                "initial_volume {initial_volume} is out of range (0-100)"
+                "initial_volume {initial_percent} is out of range (0-100)"
             )));
         }
 
@@ -104,7 +111,7 @@ impl Config {
             listen,
             audio_device: raw.audio_device.unwrap_or(defaults.audio_device),
             max_volume,
-            initial_volume: volume::effective_volume(initial_volume, max_volume),
+            initial_volume: volume::effective_volume(initial_percent, max_volume),
         })
     }
 }
@@ -137,21 +144,23 @@ mod tests {
         assert_eq!(config.listen, "127.0.0.1:9000".parse().unwrap());
         assert_eq!(config.audio_device, "plughw:2,0");
         assert_eq!(config.max_volume, 40);
-        assert_eq!(config.initial_volume, 10);
+        assert_eq!(config.initial_volume, 4); // 10% of max_volume 40
     }
 
     #[test]
     fn partial_file_keeps_other_defaults() {
         let config = Config::from_toml("max_volume = 30").unwrap();
         assert_eq!(config.max_volume, 30);
+        assert_eq!(config.initial_volume, 15); // default 50% of max_volume 30
         assert_eq!(config.listen, Config::default().listen);
         assert_eq!(config.audio_device, Config::default().audio_device);
     }
 
     #[test]
-    fn initial_volume_is_clamped_to_max_volume() {
+    fn initial_volume_is_a_percentage_of_max_volume() {
         let config = Config::from_toml("max_volume = 30\ninitial_volume = 80").unwrap();
-        assert_eq!(config.initial_volume, 30);
+        assert_eq!(config.initial_volume, 24); // 80% of 30
+        assert!(config.initial_volume <= config.max_volume);
     }
 
     #[test]

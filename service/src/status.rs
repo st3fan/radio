@@ -1,7 +1,6 @@
 use serde::Serialize;
 
 use crate::config::Config;
-use crate::volume;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -35,7 +34,8 @@ impl Status {
             stream_url: None,
             icy_title: None,
             icy_name: None,
-            volume: volume::effective_volume(config.initial_volume, config.max_volume),
+            // Already effective: config stores the scaled device volume.
+            volume: config.initial_volume,
             muted: false,
             max_volume: config.max_volume,
         }
@@ -86,7 +86,7 @@ mod tests {
     fn initial_volume_respects_max_volume() {
         let config = Config::from_toml("max_volume = 30\ninitial_volume = 80").unwrap();
         let status = Status::initial(&config);
-        assert_eq!(status.volume, 30);
+        assert_eq!(status.volume, 24); // 80% of max_volume 30
         assert_eq!(status.max_volume, 30);
     }
 

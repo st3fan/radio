@@ -20,9 +20,11 @@ The audio level sent to the device can **never** exceed the configured
 `max_volume`. If not configured, the maximum is **50** (0–100 scale). This is
 a safety requirement — the Pi drives studio speakers. All decoded PCM flows
 through our code, and the gain applied to it must come from a single,
-unit-tested clamping function (`min(volume, max_volume)`, or 0 when muted).
-Never add a code path between decoder and ALSA that bypasses it, and never
-touch the hardware/ALSA mixer volume.
+unit-tested function: `volume::effective_volume()` maps user-facing volume
+values (0–100, a percentage of `max_volume`) onto `[0, max_volume]`, so the
+cap cannot be exceeded by construction; muted means gain 0. Never add a code
+path between decoder and ALSA that bypasses it, and never touch the
+hardware/ALSA mixer volume.
 
 ## Hardware constraints
 
