@@ -18,7 +18,13 @@ use sink::{AudioSink, NullSink, WavSink};
 use source::{Source, SourceError};
 use status::Status;
 
-const USAGE: &str = "usage: radiod [--config <path>] [--sink null|wav:<path>] [-v | --version]";
+const USAGE: &str =
+    "usage: radiod [--config <path>] [--sink alsa|null|wav:<path>] [-v | --version]";
+
+#[cfg(target_os = "linux")]
+const DEFAULT_SINK: &str = "alsa";
+#[cfg(not(target_os = "linux"))]
+const DEFAULT_SINK: &str = "null";
 
 struct Args {
     config_path: Option<PathBuf>,
@@ -65,18 +71,28 @@ fn load_config(args: &Args) -> Result<Config, String> {
     }
 }
 
-/// Builds the sink from --sink. The default is null until the ALSA sink
-/// lands in milestone 2 phase 3 (which will make alsa the Linux default).
-fn make_sink(args: &Args) -> Result<Box<dyn AudioSink>, String> {
-    match args.sink.as_deref() {
-        None | Some("null") => Ok(Box::new(NullSink)),
-        Some(value) => match value.split_once(':') {
+/// Builds the sink from --sink; defaults to alsa on Linux, null elsewhere.
+fn make_sink(args: &Args, config: &Config) -> Result<Box<dyn AudioSink>, String> {
+    match args.sink.as_deref().unwrap_or(DEFAULT_SINK) {
+        "null" => Ok(Box::new(NullSink)),
+        "alsa" => make_alsa_sink(config),
+        value => match value.split_once(':') {
             Some(("wav", path)) if !path.is_empty() => {
                 Ok(Box::new(WavSink::new(PathBuf::from(path))))
             }
             _ => Err(format!("unknown sink {value:?}\n{USAGE}")),
         },
     }
+}
+
+#[cfg(target_os = "linux")]
+fn make_alsa_sink(config: &Config) -> Result<Box<dyn AudioSink>, String> {
+    Ok(Box::new(sink::AlsaSink::new(config.audio_device.clone())))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn make_alsa_sink(_config: &Config) -> Result<Box<dyn AudioSink>, String> {
+    Err("the alsa sink is only available on Linux".to_string())
 }
 
 fn make_source(stream_url: &str) -> Result<Box<dyn Source>, SourceError> {
@@ -100,7 +116,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let sink = match make_sink(&args) {
+    let sink = match make_sink(&args, &config) {
         Ok(sink) => sink,
         Err(err) => {
             eprintln!("radiod: {err}");

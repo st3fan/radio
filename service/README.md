@@ -25,7 +25,7 @@ Debian (integration testing, real audio):
 
 ```
 apt install clang pkg-config libavformat-dev libavcodec-dev \
-    libavutil-dev libswresample-dev
+    libavutil-dev libswresample-dev libasound2-dev
 ```
 
 ## Running
@@ -33,11 +33,16 @@ apt install clang pkg-config libavformat-dev libavcodec-dev \
 ```
 cargo run -- --sink wav:/tmp/out.wav      # macOS dev: listen by playing the WAV
 cargo run -- --config radio.toml          # explicit config file
+cargo run                                 # Linux: plays to the configured ALSA device
 ```
 
 Flags: `--config <path>` (default `/etc/radio/config.toml`, optional),
-`--sink null|wav:<path>` (default `null` until the ALSA sink lands),
+`--sink alsa|null|wav:<path>` (default `alsa` on Linux, `null` elsewhere),
 `-v`/`--version`.
+
+On the Debian PC, find the right ALSA device with `aplay -l` and set
+`audio_device` accordingly (`plughw:<card>,<device>` — the `plughw` prefix
+lets ALSA convert sample rates/formats the hardware does not do natively).
 
 Config file (all fields optional):
 
