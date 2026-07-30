@@ -45,6 +45,10 @@ that day). The plan describes what will be built and how.
 
 - All work lands via pull requests — no direct commits to `main`.
 - Stefan reads and approves PRs before they merge.
+- Always check PR status with `gh` (e.g. `gh pr view`, `gh pr list`) instead
+  of assuming a PR is still open — it may have been merged or closed in the
+  meantime. Never push follow-up commits to a branch whose PR is no longer
+  open; put them on a new branch with a new PR.
 - Single-PR work: branch from `main`, open a PR against `main`.
 - Multi-PR work (a plan with phases): create an **integration branch** from
   `main` (e.g. `integration/daemon-playback`), open each phase's PR against
