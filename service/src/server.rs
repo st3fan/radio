@@ -6,7 +6,7 @@ use tiny_http::{Header, Method, Response, Server};
 
 use crate::player::{Command, Player};
 use crate::pls::PlsError;
-use crate::status::Status;
+use crate::status::{State, Status};
 
 /// Maximum accepted request body; our biggest body is one playlist URL.
 const MAX_BODY_BYTES: u64 = 64 * 1024;
@@ -40,6 +40,9 @@ fn route(method: &Method, url: &str, body: &str, app: &App) -> (u16, String) {
                 Ok(request) => request,
                 Err(err) => return (400, error_body(&format!("invalid request body: {err}"))),
             };
+            if already_playing(app, &request.playlist_url) {
+                return (200, status_body(app));
+            }
             let stream_url = match (app.resolver)(&request.playlist_url) {
                 Ok(url) => url,
                 Err(err) => return (502, error_body(&err.to_string())),
@@ -56,6 +59,13 @@ fn route(method: &Method, url: &str, body: &str, app: &App) -> (u16, String) {
         }
         _ => (404, error_body("not found")),
     }
+}
+
+/// Playing a playlist that is already playing is a no-op — don't interrupt
+/// the stream (or re-fetch the playlist) just to start the same station.
+fn already_playing(app: &App, playlist_url: &str) -> bool {
+    let status = app.status.lock().expect("status lock poisoned");
+    status.state == State::Playing && status.playlist_url.as_deref() == Some(playlist_url)
 }
 
 fn status_body(app: &App) -> String {
@@ -170,6 +180,51 @@ mod tests {
         wait_for_state(&app, State::Playing);
         let (code, _) = route(&Method::Post, "/stop", "", &app);
         assert_eq!(code, 200);
+        wait_for_state(&app, State::Stopped);
+    }
+
+    #[test]
+    fn playing_the_same_playlist_again_is_a_noop() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let resolves = Arc::new(AtomicUsize::new(0));
+        let counter = resolves.clone();
+        let app = test_app(Box::new(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Ok("https://example.com/stream".to_string())
+        }));
+
+        let body = r#"{"playlist_url": "https://example.com/x.pls"}"#;
+        route(&Method::Post, "/play", body, &app);
+        wait_for_state(&app, State::Playing);
+        assert_eq!(resolves.load(Ordering::SeqCst), 1);
+
+        // Same playlist again: still playing, and the playlist was not
+        // re-fetched — the request never reached the resolver or player.
+        let (code, response) = route(&Method::Post, "/play", body, &app);
+        assert_eq!(code, 200);
+        assert_eq!(resolves.load(Ordering::SeqCst), 1);
+        let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(value["state"], "playing");
+        assert_eq!(value["playlist_url"], "https://example.com/x.pls");
+
+        // A different playlist still switches.
+        route(
+            &Method::Post,
+            "/play",
+            r#"{"playlist_url": "https://example.com/y.pls"}"#,
+            &app,
+        );
+        for _ in 0..500 {
+            if app.status.lock().unwrap().playlist_url.as_deref()
+                == Some("https://example.com/y.pls")
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(resolves.load(Ordering::SeqCst), 2);
+        route(&Method::Post, "/stop", "", &app);
         wait_for_state(&app, State::Stopped);
     }
 

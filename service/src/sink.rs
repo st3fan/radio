@@ -116,6 +116,81 @@ impl AudioSink for WavSink {
     }
 }
 
+/// Plays audio through ALSA — the production sink on the Pi and the Debian
+/// PC. Uses a `plughw:` style device so ALSA converts rate/format when the
+/// hardware does not support the stream's spec natively.
+#[cfg(target_os = "linux")]
+mod alsa_sink {
+    use super::{AudioSink, AudioSpec, SinkError};
+    use alsa::pcm::{Access, Format, HwParams, PCM};
+    use alsa::{Direction, ValueOr};
+    use std::io;
+
+    pub struct AlsaSink {
+        device: String,
+        pcm: Option<PCM>,
+        channels: usize,
+    }
+
+    impl AlsaSink {
+        pub fn new(device: String) -> AlsaSink {
+            AlsaSink {
+                device,
+                pcm: None,
+                channels: 0,
+            }
+        }
+    }
+
+    fn to_io(err: alsa::Error) -> SinkError {
+        io::Error::other(err.to_string())
+    }
+
+    impl AudioSink for AlsaSink {
+        fn open(&mut self, spec: AudioSpec) -> Result<(), SinkError> {
+            let pcm = PCM::new(&self.device, Direction::Playback, false).map_err(to_io)?;
+            {
+                let hwp = HwParams::any(&pcm).map_err(to_io)?;
+                hwp.set_access(Access::RWInterleaved).map_err(to_io)?;
+                hwp.set_format(Format::s16()).map_err(to_io)?;
+                hwp.set_rate(spec.rate, ValueOr::Nearest).map_err(to_io)?;
+                hwp.set_channels(u32::from(spec.channels)).map_err(to_io)?;
+                pcm.hw_params(&hwp).map_err(to_io)?;
+            }
+            self.channels = usize::from(spec.channels);
+            self.pcm = Some(pcm);
+            Ok(())
+        }
+
+        fn write(&mut self, frames: &[i16]) -> Result<(), SinkError> {
+            let pcm = self
+                .pcm
+                .as_ref()
+                .ok_or_else(|| io::Error::other("sink is not open"))?;
+            let io_dev = pcm.io_i16().map_err(to_io)?;
+            let mut offset = 0;
+            while offset < frames.len() {
+                match io_dev.writei(&frames[offset..]) {
+                    Ok(written) => offset += written * self.channels,
+                    // Underrun (EPIPE) or suspend: recover and retry the
+                    // remainder; give up only if recovery itself fails.
+                    Err(err) => pcm.try_recover(err, true).map_err(to_io)?,
+                }
+            }
+            Ok(())
+        }
+
+        fn close(&mut self) {
+            if let Some(pcm) = self.pcm.take() {
+                let _ = pcm.drain();
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub use alsa_sink::AlsaSink;
+
 #[cfg(test)]
 pub mod testing {
     use super::*;
