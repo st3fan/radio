@@ -104,6 +104,82 @@ needs, so it's worth doing this one first and letting the image inherit it.
 
 ---
 
+## Sleep timer, alarm clock, scheduled streams
+
+Three features, one mechanism: *do X at time T*. Worth designing together even
+if they ship separately, because building three ad-hoc timers would be silly.
+
+- **Sleep timer** — "stop in 45 minutes". Relative, one-shot, the thing you
+  want at 23:00.
+- **Alarm clock** — "wake me to Drone Zone at 07:30 on weekdays". Absolute,
+  recurring, and the one with real consequences if it fails.
+- **Scheduled streams** — "play the news at 08:00 and 18:00". Absolute,
+  recurring, and unlike the alarm it *interrupts and then returns*: play this
+  for ten minutes, then go back to whatever was on (or to silence, if that's
+  what it interrupted).
+
+### Where the scheduler lives
+
+Cron or systemd timers poking the REST API would work and need almost no new
+code, but generating unit files or crontab lines from a web UI is grim, and
+neither can express "return to what was playing before". A small scheduler in
+`radiod` is probably right: it already has a playback thread and mutex-guarded
+state, so a "what's the next due action" check is cheap. Schedules persist in
+`/var/lib/radio` (the same place the setup screen's settings would live) so
+they survive restarts and upgrades.
+
+### The Pi Zero has no real-time clock
+
+This is the detail that makes or breaks the alarm, and it's easy to miss. A Pi
+Zero W has no RTC — it has no idea what time it is until NTP answers after
+boot. So:
+
+- After a power cut the clock is wrong, then jumps once `systemd-timesyncd`
+  syncs. An alarm must not fire against a pre-sync clock, and must not fire a
+  volley of "missed" events when the clock jumps forward past them.
+- Practical rule: don't honour any schedule until the clock is known-synced,
+  and treat anything more than a few minutes overdue as missed rather than due.
+- Worth being honest in the docs: if the WiFi is down at 07:00 after an
+  overnight power cut, the alarm does not go off. That's inherent to the
+  hardware, not something we can fix in software.
+
+### Everything else that needs deciding
+
+- **Local time, not UTC offsets.** Store schedules as local time plus a day
+  mask; an alarm set for 07:30 must stay 07:30 across a DST change.
+- **Fades come free, and safely.** We own the gain path, so a sleep timer that
+  fades out over the last minute and an alarm that ramps up from quiet to
+  target over a few minutes are both easy — and because they go through
+  `effective_volume()`, the `max_volume` cap still holds. An alarm can never be
+  louder than the cap, which is worth stating so nobody relies on it being
+  louder.
+- **What if the stream is dead at 07:00?** The classic internet-radio-alarm
+  failure: silence, and you oversleep. Needs a fallback — a local file, or
+  simply a beep — after N seconds of failing to connect. Non-negotiable for
+  anything called an alarm clock.
+- **Precedence.** Define it once, in a table: what happens when a scheduled
+  news slot fires during a sleep-timer fade, or when you manually change
+  station mid-schedule. Sane defaults: a manual action always wins and cancels
+  the schedule that's running; an alarm outranks a sleep timer.
+- **Visibility and escape.** The UI should show "stopping in 12 min" and
+  "news at 18:00" with a one-click cancel. A timer you can't see or stop is
+  worse than no timer.
+
+### Overlap with Home Assistant
+
+If the HA integration lands, HA automations do alarms and schedules well, and
+some of this becomes redundant. But a radio that needs a home automation hub
+to wake you up isn't an appliance any more — the sleep timer especially should
+work on a box with nothing else on the network. Suggest: build the sleep timer
+regardless (small, self-contained, immediately useful), and let the alarm and
+schedules wait until we know whether HA is happening.
+
+**Effort:** sleep timer alone is small — worth doing on its own. The full
+scheduler is medium, and most of that is the clock-sync and fallback
+edge cases rather than the timing logic.
+
+---
+
 ## More streams beyond SomaFM
 
 **Why:** SomaFM is great but it is one curator's taste. Sometimes you want a
@@ -393,10 +469,6 @@ are the two that unblock other things.
 
 ## Smaller things, unsorted
 
-- **Sleep timer.** "Stop in 45 minutes." Trivial in the daemon, and the kind
-  of thing you want at 23:00.
-- **Alarm / wake to radio.** Falls out of Home Assistant integration for free,
-  or a couple of lines of cron if we don't want to wait for that.
 - **Physical controls.** A rotary encoder for volume and 3–4 buttons for
   favorites, on the GPIO header. This is the real endgame for a box that
   drives studio speakers — you shouldn't need a phone to turn it down. Needs
