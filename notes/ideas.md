@@ -244,41 +244,99 @@ itself is a couple of `ureq`/`file_get_contents` calls.
 obvious thing to want from a box that already owns them. It turns the Pi from
 a radio into a speaker endpoint.
 
-**Sketch:** don't write this ourselves. `shairport-sync` is the mature
-implementation and packaged in Debian. AirPlay 1 is cheap; AirPlay 2 needs
-`nqptp` and more CPU/RAM — on a Pi Zero W 1.0 that needs measuring before we
-promise it, and 2.4 GHz-only WiFi is a real constraint for a streaming
-protocol with tight timing.
+**Sketch:** don't write the protocol ourselves. `shairport-sync` is the mature
+implementation and packaged in Debian. But it must be *integrated*, not merely
+installed — see the requirement below.
 
-**The two problems that actually matter:**
+### Requirement: one player, not two daemons fighting over a sound card
 
-1. **The volume cap.** This is the big one. `shairport-sync` writes to ALSA
-   directly — its samples never pass through `volume::effective_volume()`, so
-   our critical invariant (`CLAUDE.md`) simply does not hold for AirPlay
-   audio. A phone at full volume would drive the studio speakers at full
-   scale. Options, none free:
-   - Configure `shairport-sync` with a software volume attenuation and its
-     own max (`volume_max_db`) — but that's a *second* place the invariant
-     lives, enforced by config rather than by a unit-tested function, which
-     is exactly what the invariant was written to avoid.
-   - Have `shairport-sync` output to a pipe/loopback (`snd-aloop`) and let
-     `radiod` be the only writer to the real device, applying our gain. This
-     preserves the invariant properly — one code path to the hardware — at
-     the cost of a more complex audio graph and added latency.
-   - The second option is almost certainly the right one, and it's a
-     meaningful chunk of design work in `radiod` (a second `Source`).
-2. **Device arbitration.** Two processes want the ALSA device. Who wins when
-   AirPlay starts while the radio is playing? Nicest behaviour: AirPlay
-   takes over, radio auto-resumes when the AirPlay session ends — which is
-   what the loopback design gives us naturally, since `radiod` sees both
-   sources and can implement the policy.
+The bar for this feature is that it feels like one appliance. Start AirPlay
+from a phone and the radio stops cleanly and the phone's audio comes out of
+the speakers; end the AirPlay session and the radio comes back on the station
+it was playing. No clicks, no "device busy", no half-second of two things at
+once, no state where the website says "playing" but the speakers say
+otherwise. Anything less isn't worth shipping — a box that sometimes refuses
+to play because another process grabbed the card is worse than a box that
+doesn't do AirPlay.
 
-**Open questions:** does a Pi Zero W's WiFi hold up? Is the added latency of a
-loopback acceptable (for music, yes; nobody is playing games through this).
+That rules out the obvious approach (install `shairport-sync`, point it at
+`plughw:0,0`, hope). Two processes opening the same ALSA device means whoever
+gets there first wins and the other one errors out, and it also breaks the
+volume cap, since `shairport-sync`'s samples would never pass through
+`volume::effective_volume()` — a phone at full volume would drive the studio
+speakers at full scale. Both problems have the same fix.
 
-**Effort:** large, and it changes the audio architecture. Prototype
-`shairport-sync` standalone on the Debian PC first and just *listen* before
-designing anything.
+**`radiod` stays the only writer to the sound card.** `shairport-sync` never
+touches it; it hands us PCM instead, and AirPlay audio becomes a second
+`Source` inside the daemon, going through the same gain path and the same
+sink as the radio does. The invariant holds by construction, arbitration
+becomes an ordinary state machine inside one process, and there is one place
+that knows what the speakers are doing.
+
+**Transport:** `shairport-sync` has backends that write PCM to a pipe rather
+than to ALSA, which is the simplest version — a named FIFO that `radiod`
+reads. If the AirPlay 2 build turns out to require the ALSA backend
+specifically (worth checking early — I think it may), the fallback is
+`snd-aloop`: `shairport-sync` plays to a loopback device and `radiod` captures
+from the other end. Same architecture, different plumbing.
+
+**Session signalling:** we need to know a session started *before* audio
+arrives, so the radio can stop first rather than during. `shairport-sync` has
+session hooks that run a command when play begins and ends — pointed at
+`radiod`'s loopback API, that's the trigger. Treat data appearing on the pipe
+as a backstop, not the primary signal, and treat the pipe running dry mid-song
+as a network hiccup (write silence, hold the session) rather than an end.
+
+### Handoff behaviour, spelled out
+
+| Event | Radio was… | Behaviour |
+|---|---|---|
+| AirPlay session starts | playing | Fade out over ~200 ms, disconnect the stream, remember the station. Switch the sink to the AirPlay source. |
+| AirPlay session starts | paused / stopped | Nothing to stop; just take the sink. Remember that we were *not* playing. |
+| AirPlay session ends | was playing | Reconnect the remembered station and fade back in. |
+| AirPlay session ends | was paused / stopped | Stay silent. Do not surprise the room with radio. |
+| Website `/play` during AirPlay | — | The person at the keyboard wins: end the AirPlay session and play the station. |
+| Volume changed from either side | — | One volume, one cap. See below. |
+
+A few consequences worth stating:
+
+- **It's a takeover, not a mixer.** One pair of speakers, one thing playing.
+  Mixing two sources is more code and worse behaviour.
+- **The phone's volume slider should work**, and must not escape the cap.
+  AirPlay senders transmit volume changes; map them onto `radiod`'s own volume
+  value so `effective_volume()` still applies. The phone at 100% means 100% of
+  `max_volume`, exactly like the website's slider. `shairport-sync` must be
+  told not to apply its own volume, or we'd be attenuating twice.
+- **`/status` should tell the truth**, with an AirPlay state and the sender's
+  name, and the website should show it — including that the radio controls are
+  inert while a phone owns the speakers. A UI that lies about what's playing
+  is the failure mode this whole design exists to avoid.
+- **Metadata comes along for free.** `shairport-sync` can emit what's playing
+  (artist, title, album, artwork) — feeding that into `/status` alongside
+  `icy_title` means the now-playing display keeps working during AirPlay, and
+  the Phosphor UI needs no special case.
+- **If `radiod` is down, AirPlay is down**, because nothing else can open the
+  card. That's the correct coupling, not a bug — and the rule that follows is
+  absolute: **never configure a fallback where `shairport-sync` writes to the
+  hardware directly**, because that path bypasses the cap. Better silent than
+  loud.
+- **Packaging:** `shairport-sync`'s unit ordered after `radiod`, the FIFO (or
+  loopback) created at startup with permissions shared between the `radio`
+  user and whatever `shairport-sync` runs as, and AirPlay off by default in
+  the config until someone turns it on.
+- **It stays testable on macOS.** An AirPlay source that reads PCM from a pipe
+  is exactly the shape the existing `Source`/`AudioSink` traits already
+  assume: feed it a canned file, assert on what the dev sink received, and the
+  handoff state machine gets unit tests without an Apple device or a sound
+  card in the loop.
+
+**Open questions:** does a Pi Zero W's WiFi hold up? How much latency does the
+pipe or loopback add (for music, irrelevant; it only matters if we ever care
+about video sync)? What does the AirPlay 2 build actually require — see below.
+
+**Effort:** large, and it changes the audio architecture — `radiod` grows a
+notion of "which source owns the sink". Prototype `shairport-sync` standalone
+on the Debian PC first and just *listen* before designing any of it.
 
 ### Explore AirPlay 2 specifically
 
