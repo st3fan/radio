@@ -11,7 +11,9 @@ Single PR against `main` (no phases needed).
 
 In:
 
-- `radiod/` cargo project (binary crate).
+- `service/` cargo project (binary crate producing `radiod`), establishing
+  the monorepo layout: the Rust daemon in `service/`, the PHP app later in
+  `website/`.
 - Config loading from TOML with defaults, `--config` flag.
 - The volume clamp function — the single place gain is computed — with
   thorough unit tests.
@@ -29,8 +31,8 @@ Out (later milestones):
 ## Project setup
 
 ```
-radiod/
-  Cargo.toml
+service/
+  Cargo.toml       package + binary named "radiod"
   src/
     main.rs        arg parsing (--config, -v), wiring
     config.rs      Config struct + TOML loading + defaults
@@ -123,7 +125,7 @@ Test: serialization matches the documented shape (field names, nulls).
 ## Acceptance
 
 - `cargo test`, `cargo clippy` (no warnings), `cargo fmt --check` pass in
-  `radiod/`.
+  `service/`.
 - `cargo run` (no config file present) then
   `curl http://127.0.0.1:8080/status` returns the stubbed JSON with
   `volume: 25`, `max_volume: 50`.
