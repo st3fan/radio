@@ -17,7 +17,13 @@ html { background: var(--ground); }
 
 body {
     margin: 0 auto;
-    padding: 24px 20px 64px;
+    /* Safe-area insets: in standalone (homescreen) mode the terminal
+       runs edge to edge, so keep content clear of the notch and the
+       home indicator. */
+    padding: calc(24px + env(safe-area-inset-top, 0px))
+        calc(20px + env(safe-area-inset-right, 0px))
+        calc(64px + env(safe-area-inset-bottom, 0px))
+        calc(20px + env(safe-area-inset-left, 0px));
     max-width: 860px;
     min-height: 100vh;
     background: var(--ground);
@@ -198,7 +204,13 @@ footer {
 /* ---- small screens (a phone across the office) ---- */
 
 @media (max-width: 540px) {
-    body { padding: 16px 12px 48px; font-size: 13px; }
+    body {
+        padding: calc(16px + env(safe-area-inset-top, 0px))
+            calc(12px + env(safe-area-inset-right, 0px))
+            calc(48px + env(safe-area-inset-bottom, 0px))
+            calc(12px + env(safe-area-inset-left, 0px));
+        font-size: 13px;
+    }
     .col-genre { display: none; }
     .now .title { font-size: 16px; }
 }
