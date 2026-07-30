@@ -1,0 +1,11 @@
+Package: radio-website
+Version: @VERSION@
+Architecture: all
+Maintainer: Stefan Arentz <stefan.arentz@gmail.com>
+Section: web
+Priority: optional
+Depends: lighttpd, php-fpm, php-cli
+Description: Web UI for the Radio daemon
+ Lists the SomaFM channels and controls radiod through its loopback HTTP
+ API. Served by lighttpd + php-fpm on port 80; the browser never talks to
+ the daemon directly.
