@@ -3,13 +3,13 @@
 An internet radio player for a Raspberry Pi Zero W connected to studio
 speakers. Two components:
 
-- `radiod/` — Rust daemon with an HTTP REST API on `127.0.0.1` that plays a
+- `service/` — Rust daemon with an HTTP REST API on `127.0.0.1` that plays a
   stream (from a `.pls` playlist URL) to a preconfigured ALSA device.
   Streaming, demuxing and decoding are done in-process via the FFmpeg
   libraries (libavformat/libavcodec, through the `ffmpeg-next` crate); ALSA
   output via the `alsa` crate. The distro's libav*/libasound shared
   libraries are runtime dependencies on the Pi.
-- `web/` — PHP website on the same Pi that lists SomaFM channels and controls
+- `website/` — PHP website on the same Pi that lists SomaFM channels and controls
   the daemon (server-side; the browser never talks to the daemon directly).
 
 The overall design and roadmap live in `notes/plan.md`. Read that first.
@@ -57,7 +57,7 @@ that day). The plan describes what will be built and how.
 
 ## Coding notes
 
-### Rust (`radiod/`)
+### Rust (`service/`)
 
 - Run `cargo test`, `cargo clippy` and `cargo fmt` before considering a
   change done.
@@ -84,7 +84,7 @@ that day). The plan describes what will be built and how.
 - **Pi Zero (target only):** deployment target. Never develop or build on
   it — one ARMv6 core and 512 MB make that a non-starter.
 
-### PHP (`web/`)
+### PHP (`website/`)
 
 - Plain PHP, no framework. Start functional and unstyled; iterate on looks
   later.
@@ -92,9 +92,11 @@ that day). The plan describes what will be built and how.
 
 ## Directory layout
 
+Monorepo with the two components as top-level directories:
+
 ```
-radiod/   Rust daemon
-web/      PHP website
-notes/    long-lived notes and the overall plan
-plans/    per-step implementation plans (YYYYMMDD-NN-slug.md)
+service/   Rust daemon (the binary is named radiod)
+website/   PHP website
+notes/     long-lived notes and the overall plan
+plans/     per-step implementation plans (YYYYMMDD-NN-slug.md)
 ```

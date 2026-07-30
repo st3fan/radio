@@ -135,7 +135,7 @@ Errors: JSON body `{"error": "…"}` with appropriate 4xx/5xx status.
 ## Component 2: Website (PHP)
 
 Plain PHP, kept deliberately simple — fast to iterate on, trivial resource
-footprint. Lives in `web/`.
+footprint. Lives in `website/`.
 
 - Fetches `https://api.somafm.com/channels.json` server-side and caches it on
   disk (e.g. 5-minute TTL) so we don't hammer SomaFM and pages stay fast on
@@ -153,9 +153,11 @@ footprint. Lives in `web/`.
 
 ## Repository layout
 
+Monorepo with the two components as top-level directories:
+
 ```
-radiod/       Rust daemon (cargo project)
-web/          PHP website
+service/      Rust daemon (cargo project; the binary is named radiod)
+website/      PHP website
 notes/        long-lived notes, this plan
 plans/        per-step implementation plans (YYYYMMDD-NN-slug.md)
 ```
@@ -165,7 +167,7 @@ plans/        per-step implementation plans (YYYYMMDD-NN-slug.md)
 Each milestone gets its own `plans/YYYYMMDD-NN-slug.md` and lands via one or
 more PRs (see CLAUDE.md for the workflow).
 
-1. **Daemon skeleton** — cargo project under `radiod/`, config loading with
+1. **Daemon skeleton** — cargo project under `service/`, config loading with
    defaults (`max_volume = 50`), tiny_http server on `127.0.0.1`, `/status`
    returning stubbed state, unit tests for config + volume clamping.
 2. **Playback** — `.pls` fetch/parse, ffmpeg-next open/decode/resample
