@@ -37,6 +37,86 @@ row and a "Favorites" section pinned at the top of the page.
 
 ---
 
+## Artwork in the Phosphor UI
+
+**Why:** the pre-Phosphor website showed SomaFM's channel artwork; the
+terminal redesign dropped it, and the channel list is now pure text. The art
+is genuinely good — it's a lot of what gives SomaFM its character — and
+stations are much faster to recognise by picture than by name in a list.
+We're already caching `channels.json`, which carries `image`, `largeimage`
+and `xlimage`, so the data is sitting right there unused.
+
+**The tension, which is the whole design problem:** Phosphor is a green CRT.
+The stylesheet says it out loud — "single-theme by design: a CRT has no light
+mode". Dropping full-colour JPEGs into it would look like a browser window
+pasted onto a terminal and would undo the thing that makes the UI good. So
+the artwork has to be *rendered as the terminal would render it*, not merely
+placed on top of it.
+
+**Options, roughly cheapest first:**
+
+1. **CSS filters only.** `grayscale` + `contrast`, tinted toward
+   `--phosphor`, sitting under the existing scanline sheen. No new
+   dependencies, no server cost, about ten lines. Won't look like a real
+   bitmap render, but it will look deliberate.
+2. **An SVG filter** (`feComponentTransfer` to posterize to a few levels,
+   `feColorMatrix` to tint). Still declarative, still no JS or PHP
+   dependencies, but a genuinely 4-level poster rather than a wash — much
+   closer to "a CRT drawing a bitmap".
+3. **Real 1-bit dithering** — Floyd–Steinberg or an ordered Bayer matrix, in
+   phosphor green on near-black. This is the one that would look *right*:
+   chunky, monochrome, unmistakably a terminal displaying an image. Needs
+   either canvas in the browser or image processing on the Pi.
+4. **ASCII art.** Render each logo to character cells, like `chafa` or
+   `jp2a`. The most on-theme option available and pleasingly absurd — the
+   whole UI is monospace already. Precompute once per channel, cache the
+   text, and it costs nothing to serve. Risk: at thumbnail sizes it may just
+   read as noise. Worth prototyping precisely because it's either delightful
+   or unusable, with little in between.
+
+My instinct is (3) for the now-playing panel and (1) or nothing for the list
+rows — but this is a "render four versions and look at them" decision, the
+same way the Phosphor direction itself was chosen from three proposals in
+milestone 7.
+
+**Where it goes:**
+
+- **A now-playing panel** — the current station's art, larger, next to the
+  ICY title. This is the one that earns its pixels, and it's a fixed cost of
+  one image regardless of how many stations exist.
+- **List thumbnails** — small, one per row. Careful here: the list's current
+  strength is that it's dense and instantly scannable. Forty images must not
+  turn it into a slow, layout-shifting scroll. Fixed dimensions, lazy
+  loading, and a plain glyph placeholder when art is missing.
+
+**Practicalities:**
+
+- **Proxy and cache the images on the Pi** rather than hotlinking, the same
+  way `channels.json` is already cached — otherwise every page load has the
+  browser talking to somafm.com, which is slow on first paint and leaks
+  visitors to a third party. Station art never changes, so it caches
+  indefinitely; a few dozen thumbnails is trivial disk.
+- **Do the expensive rendering once**, at cache-fill time, not per request —
+  an ARM1176 should not be dithering images on the fly. If dithering happens
+  server-side it means PHP-GD, which is a new dependency for the website
+  package and needs justifying; doing it in a canvas in the browser avoids
+  that entirely and costs the Pi nothing.
+- **Assume the art is missing or bad.** Radio Browser stations (above) come
+  with favicons of wildly varying size and quality, and some with none at
+  all. Whatever we build needs a fallback that doesn't look broken.
+
+**Worth noting:** if AirPlay lands, `shairport-sync` supplies real cover art
+per track — so an artwork panel built now gets a second, better use later,
+and album art changing every few minutes is a much stronger reason to have
+one than a station logo that never changes. Track art for *radio* is a
+different story: ICY gives us only a title string, so it would mean querying
+some third-party lookup service and living with wrong matches. Not worth it.
+
+**Effort:** small for CSS filters, a weekend for dithering done properly.
+Pure polish — but polish is the entire point of the Phosphor milestone.
+
+---
+
 ## A setup screen for the config file
 
 **Why:** `/etc/radio/config.toml` has four fields, and today changing any of
