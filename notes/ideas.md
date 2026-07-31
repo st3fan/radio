@@ -509,7 +509,12 @@ leave", a card in the dashboard, voice control for free.
    possible — but it's a second codebase in a second language, and it still
    needs the API reachable off-loopback.
 
-**Leaning:** (2), with (4) as the fallback if the MPD spike turns ugly. Either
+**Leaning:** (2), with (4) as the fallback if the MPD spike turns ugly.
+`notes/api-standards.md` surveys the protocols properly and strengthens this:
+MPD isn't one integration, it's the hub that `mpDris2` (MPRIS) and `upmpdcli`
+(UPnP) bridge from, so option (2) subsumes option (3) at no extra cost. It
+also records the one rule a front-end must follow — report the requested
+percentage, not the effective device volume. Either
 way it forces a decision we've so far avoided: **letting something other than
 the local website talk to the daemon.** That means an auth story (token? LAN
 only? bind to a specific interface?) and re-reading the threat model in
