@@ -108,18 +108,22 @@ merged history keeps its shape.
   builds and tests here. Needs `ffmpeg` + `pkg-config` from Homebrew;
   bindgen uses Xcode's libclang. `cargo test`, `clippy`, `fmt` must always
   be green on macOS.
-- **Debian PC (integration):** connected to the actual speakers. Used over
-  SSH for real-audio testing with real ALSA — test here regularly when
-  audio code changes, since macOS gives no signal on the ALSA/Linux side.
-  Same Debian library ecosystem as Raspberry Pi OS.
+- **Debian PC (integration):** real-ALSA testing with its own sound
+  card — test here regularly when audio code changes, since macOS gives
+  no signal on the ALSA/Linux side. Same Debian library ecosystem as
+  Raspberry Pi OS.
 - **Any Debian 13 environment (packaging):** `.deb`s for amd64, arm64
   and armhf build via `service/setup-build.sh` + `service/build-deb.sh`
   (native, or Debian-multiarch cross on an amd64 host — no Docker, no
   emulation, no sysroots) and `deploy/build-website-deb.sh`; the GitHub
   release workflow runs the same scripts on public runners, and
   publishing a release is the only thing that builds .debs.
-- **The radio board (target only):** runs the release packages. Never
-  develop or build on it — 512 MB makes that a non-starter.
+- **muzak — the radio (target only):** a Pi 4 (1 GB, arm64 Raspberry Pi
+  OS trixie) with the studio speakers on a USB DAC; reachable over SSH
+  as root for installing .debs and reading logs (see
+  `notes/clean-install.md`). It runs release packages only — never
+  develop or build on it (1 GB), and treat the speakers as live:
+  conservative ceilings and volumes for any audible test.
 
 ### PHP (`website/`)
 

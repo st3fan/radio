@@ -65,6 +65,15 @@ then a failed unit with a helpful journal.)
 - Ceiling: `PCM` on `hw:1` pinned at exactly -20.00 dB, verified via
   `amixer` while a live SomaFM stream played to the speakers.
 - `/stop` settled in 86 ms (bounded ALSA buffer + drop-not-drain).
+- USB replug mid-play (simulated with a sysfs unbind/bind of the DAC):
+  the sink fails cleanly ("No such device"), state goes `stopped`, the
+  daemon stays up, and the next `/play` re-asserts the ceiling before
+  audio flows. (This DAC happens to persist its level across
+  re-enumeration; the comes-back-loud correction path was verified
+  separately on the Debian PC by moving the control externally.)
+- Dependency closure double-check: `libavcodec61` has 35 hard Depends
+  and zero Recommends — `--no-install-recommends` would not slim the
+  install; the closure is structural.
 - Footprint: ~190 MB used of 905 total while playing — comfortable on
   the 1 GB Pi 4. The board never builds anything; it only runs release
   packages.
