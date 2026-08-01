@@ -54,6 +54,22 @@ performance gate.
 
 ## Design
 
+### Decision record: monolith
+
+Considered and rejected during plan review: splitting radiod into
+services (streamer / api / AirPlay receiver) talking over D-Bus. The
+deciding argument is the audio plane — the never-amplify gain path, the
+single ALSA open, and the mixer-ceiling ownership are enforced *by
+construction* inside one process; any split either gives two producers
+device access or requires a PCM-over-IPC audio daemon that turns the
+invariant into a convention. The control plane already has an IPC
+surface (the loopback HTTP API), so a separate `radio-api` buys nothing.
+The embed proceeds as designed — and deliberately keeps the would-be cut
+line: AirPlay enters as a `Source` behind a bounded channel, so if the
+receiver ever needs process isolation, the channel becomes a socket
+without redesigning radiod. (Related idea recorded in `notes/ideas.md`:
+absorbing the website into the binary and retiring PHP/lighttpd.)
+
 ### AirPlay is a source, not a second player
 
 radiod's pipeline is pull-based (`source.read → apply_gain → sink`); the
