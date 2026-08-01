@@ -100,7 +100,11 @@ fn make_source(stream_url: &str) -> Result<Box<dyn Source>, SourceError> {
     Ok(Box::new(FfmpegSource::open(stream_url)?))
 }
 
-fn main() -> ExitCode {
+// Current-thread flavor: the Pi Zero has one ARMv6 core, so a multi-thread
+// scheduler buys nothing. Blocking work (playlist fetches) still runs on
+// tokio's separate blocking pool; audio runs on its own OS thread.
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> ExitCode {
     let args = match parse_args() {
         Ok(args) => args,
         Err(err) => {
@@ -125,8 +129,8 @@ fn main() -> ExitCode {
         }
     };
 
-    let server = match tiny_http::Server::http(config.listen) {
-        Ok(server) => server,
+    let listener = match tokio::net::TcpListener::bind(config.listen).await {
+        Ok(listener) => listener,
         Err(err) => {
             eprintln!("radiod: cannot listen on {}: {err}", config.listen);
             return ExitCode::FAILURE;
@@ -135,17 +139,17 @@ fn main() -> ExitCode {
 
     let status = Arc::new(Mutex::new(Status::initial(&config)));
     let player = player::spawn(status.clone(), sink, Box::new(make_source));
-    let app = server::App {
+    let app = Arc::new(server::App {
         status,
         player,
-        resolver: Box::new(pls::resolve),
-    };
+        resolver: Arc::new(pls::resolve),
+    });
 
     println!(
         "radiod {} listening on http://{}",
         env!("CARGO_PKG_VERSION"),
         config.listen
     );
-    server::serve(&server, &app);
+    server::serve(listener, app).await;
     ExitCode::SUCCESS
 }

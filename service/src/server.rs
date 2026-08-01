@@ -1,8 +1,13 @@
-use std::io::Read;
 use std::sync::{Arc, Mutex};
 
+use http_body_util::{BodyExt, Full, Limited};
+use hyper::body::{Bytes, Incoming};
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper::{Method, Request, Response};
+use hyper_util::rt::TokioIo;
 use serde::Deserialize;
-use tiny_http::{Header, Method, Response, Server};
+use tokio::net::TcpListener;
 
 use crate::player::{Command, Player};
 use crate::pls::PlsError;
@@ -10,11 +15,12 @@ use crate::status::{State, Status};
 use crate::volume;
 
 /// Maximum accepted request body; our biggest body is one playlist URL.
-const MAX_BODY_BYTES: u64 = 64 * 1024;
+const MAX_BODY_BYTES: usize = 64 * 1024;
 
 /// Resolves a playlist URL to a stream URL. Injected so routing tests do not
-/// touch the network; production wires in `pls::resolve`.
-pub type Resolver = Box<dyn Fn(&str) -> Result<String, PlsError> + Send>;
+/// touch the network; production wires in `pls::resolve`. It runs on the
+/// blocking pool (the fetch is blocking `ureq`), hence `Sync` and `Arc`.
+pub type Resolver = Arc<dyn Fn(&str) -> Result<String, PlsError> + Send + Sync>;
 
 pub struct App {
     pub status: Arc<Mutex<Status>>,
@@ -37,11 +43,11 @@ fn error_body(message: &str) -> String {
 }
 
 /// The outcome of routing a request: an HTTP status code and a JSON body.
-/// Kept free of tiny_http types so routing is unit-testable.
-fn route(method: &Method, url: &str, body: &str, app: &App) -> (u16, String) {
+/// Kept free of hyper's request/response types so routing is unit-testable.
+async fn route(method: &Method, url: &str, body: &str, app: &App) -> (u16, String) {
     match (method, url) {
-        (Method::Get, "/status") => (200, status_body(app)),
-        (Method::Post, "/play") => {
+        (&Method::GET, "/status") => (200, status_body(app)),
+        (&Method::POST, "/play") => {
             let request: PlayRequest = match serde_json::from_str(body) {
                 Ok(request) => request,
                 Err(err) => return (400, error_body(&format!("invalid request body: {err}"))),
@@ -56,21 +62,29 @@ fn route(method: &Method, url: &str, body: &str, app: &App) -> (u16, String) {
                 }
                 _ => {}
             }
-            let stream_url = match (app.resolver)(&request.playlist_url) {
-                Ok(url) => url,
-                Err(err) => return (502, error_body(&err.to_string())),
-            };
+            // The resolver does blocking network I/O; keep it off the
+            // single-threaded runtime.
+            let resolver = app.resolver.clone();
+            let playlist_url = request.playlist_url.clone();
+            let stream_url =
+                match tokio::task::spawn_blocking(move || resolver(&playlist_url)).await {
+                    Ok(Ok(url)) => url,
+                    Ok(Err(err)) => return (502, error_body(&err.to_string())),
+                    Err(err) => {
+                        return (500, error_body(&format!("playlist resolver failed: {err}")));
+                    }
+                };
             app.player.send(Command::Play {
                 playlist_url: request.playlist_url,
                 stream_url,
             });
             (200, status_body(app))
         }
-        (Method::Post, "/stop") => {
+        (&Method::POST, "/stop") => {
             app.player.send(Command::Stop);
             (200, status_body(app))
         }
-        (Method::Post, "/pause") => match current_state(app) {
+        (&Method::POST, "/pause") => match current_state(app) {
             State::Playing => {
                 app.player.send(Command::Pause);
                 (200, status_body(app))
@@ -78,7 +92,7 @@ fn route(method: &Method, url: &str, body: &str, app: &App) -> (u16, String) {
             State::Paused => (200, status_body(app)),
             State::Stopped => (409, error_body("nothing is playing")),
         },
-        (Method::Post, "/resume") => match current_state(app) {
+        (&Method::POST, "/resume") => match current_state(app) {
             State::Paused => {
                 app.player.send(Command::Resume);
                 (200, status_body(app))
@@ -86,7 +100,7 @@ fn route(method: &Method, url: &str, body: &str, app: &App) -> (u16, String) {
             State::Playing => (200, status_body(app)),
             State::Stopped => (409, error_body("nothing is playing")),
         },
-        (Method::Post, "/volume") => {
+        (&Method::POST, "/volume") => {
             let request: VolumeRequest = match serde_json::from_str(body) {
                 Ok(request) => request,
                 Err(err) => return (400, error_body(&format!("invalid request body: {err}"))),
@@ -103,11 +117,11 @@ fn route(method: &Method, url: &str, body: &str, app: &App) -> (u16, String) {
             }
             (200, status_body(app))
         }
-        (Method::Post, "/mute") => {
+        (&Method::POST, "/mute") => {
             set_muted(app, true);
             (200, status_body(app))
         }
-        (Method::Post, "/unmute") => {
+        (&Method::POST, "/unmute") => {
             set_muted(app, false);
             (200, status_body(app))
         }
@@ -138,30 +152,56 @@ fn status_body(app: &App) -> String {
     serde_json::to_string(&*status).expect("status serializes")
 }
 
-/// Blocking accept loop; requests are handled sequentially. One caller (the
-/// PHP site) and trivial handlers — no thread pool until profiling says
-/// otherwise.
-pub fn serve(server: &Server, app: &App) {
-    let content_type: Header = "Content-Type: application/json"
-        .parse()
-        .expect("valid header");
-    for mut request in server.incoming_requests() {
-        let mut body = String::new();
-        if let Err(err) = request
-            .as_reader()
-            .take(MAX_BODY_BYTES)
-            .read_to_string(&mut body)
-        {
-            eprintln!("radiod: failed to read request body: {err}");
-            continue;
-        }
-        let (code, response_body) = route(request.method(), request.url(), &body, app);
-        let response = Response::from_string(response_body)
-            .with_status_code(code)
-            .with_header(content_type.clone());
-        if let Err(err) = request.respond(response) {
-            eprintln!("radiod: failed to send response: {err}");
-        }
+/// Reads the request body, capped at MAX_BODY_BYTES.
+async fn read_body(body: Incoming) -> Result<String, String> {
+    let bytes = Limited::new(body, MAX_BODY_BYTES)
+        .collect()
+        .await
+        .map_err(|err| err.to_string())?
+        .to_bytes();
+    String::from_utf8(bytes.to_vec()).map_err(|err| err.to_string())
+}
+
+async fn handle(
+    request: Request<Incoming>,
+    app: Arc<App>,
+) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let (code, body) = match read_body(request.into_body()).await {
+        Ok(body) => route(&method, &path, &body, &app).await,
+        Err(err) => (400, error_body(&format!("invalid request body: {err}"))),
+    };
+    let response = Response::builder()
+        .status(code)
+        .header(hyper::header::CONTENT_TYPE, "application/json")
+        .body(Full::new(Bytes::from(body)))
+        .expect("valid response");
+    Ok(response)
+}
+
+/// Accept loop. One task per connection — that is for HTTP keep-alive, not
+/// concurrency: one caller (the PHP site), trivial handlers, and the whole
+/// control plane shares the single runtime thread.
+pub async fn serve(listener: TcpListener, app: Arc<App>) {
+    loop {
+        let (stream, _) = match listener.accept().await {
+            Ok(accepted) => accepted,
+            Err(err) => {
+                eprintln!("radiod: failed to accept connection: {err}");
+                continue;
+            }
+        };
+        let app = app.clone();
+        tokio::spawn(async move {
+            let service = service_fn(|request| handle(request, app.clone()));
+            if let Err(err) = http1::Builder::new()
+                .serve_connection(TokioIo::new(stream), service)
+                .await
+            {
+                eprintln!("radiod: connection error: {err}");
+            }
+        });
     }
 }
 
@@ -198,7 +238,7 @@ mod tests {
     }
 
     fn ok_resolver() -> Resolver {
-        Box::new(|_| Ok("https://example.com/stream".to_string()))
+        Arc::new(|_| Ok("https://example.com/stream".to_string()))
     }
 
     fn wait_for_state(app: &App, state: State) {
@@ -211,10 +251,10 @@ mod tests {
         panic!("state not reached within 1s");
     }
 
-    #[test]
-    fn get_status_returns_status_json() {
+    #[tokio::test]
+    async fn get_status_returns_status_json() {
         let app = test_app(ok_resolver());
-        let (code, body) = route(&Method::Get, "/status", "", &app);
+        let (code, body) = route(&Method::GET, "/status", "", &app).await;
         assert_eq!(code, 200);
         let value: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(value["state"], "stopped");
@@ -222,59 +262,61 @@ mod tests {
         assert_eq!(value["max_volume"], 50);
     }
 
-    #[test]
-    fn play_starts_playback() {
+    #[tokio::test]
+    async fn play_starts_playback() {
         let app = test_app(ok_resolver());
         let (code, _) = route(
-            &Method::Post,
+            &Method::POST,
             "/play",
             r#"{"playlist_url": "https://example.com/x.pls"}"#,
             &app,
-        );
+        )
+        .await;
         assert_eq!(code, 200);
         wait_for_state(&app, State::Playing);
-        let (_, body) = route(&Method::Get, "/status", "", &app);
+        let (_, body) = route(&Method::GET, "/status", "", &app).await;
         let value: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(value["playlist_url"], "https://example.com/x.pls");
         assert_eq!(value["stream_url"], "https://example.com/stream");
-        route(&Method::Post, "/stop", "", &app);
+        route(&Method::POST, "/stop", "", &app).await;
         wait_for_state(&app, State::Stopped);
     }
 
-    #[test]
-    fn stop_stops_playback() {
+    #[tokio::test]
+    async fn stop_stops_playback() {
         let app = test_app(ok_resolver());
         route(
-            &Method::Post,
+            &Method::POST,
             "/play",
             r#"{"playlist_url": "https://example.com/x.pls"}"#,
             &app,
-        );
+        )
+        .await;
         wait_for_state(&app, State::Playing);
-        let (code, _) = route(&Method::Post, "/stop", "", &app);
+        let (code, _) = route(&Method::POST, "/stop", "", &app).await;
         assert_eq!(code, 200);
         wait_for_state(&app, State::Stopped);
     }
 
-    #[test]
-    fn playing_the_same_playlist_again_is_a_noop() {
+    #[tokio::test]
+    async fn playing_the_same_playlist_again_is_a_noop() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let resolves = Arc::new(AtomicUsize::new(0));
         let counter = resolves.clone();
-        let app = test_app(Box::new(move |_| {
+        let app = test_app(Arc::new(move |_| {
             counter.fetch_add(1, Ordering::SeqCst);
             Ok("https://example.com/stream".to_string())
         }));
 
         let body = r#"{"playlist_url": "https://example.com/x.pls"}"#;
-        route(&Method::Post, "/play", body, &app);
+        route(&Method::POST, "/play", body, &app).await;
         wait_for_state(&app, State::Playing);
         assert_eq!(resolves.load(Ordering::SeqCst), 1);
 
         // Same playlist again: still playing, and the playlist was not
         // re-fetched — the request never reached the resolver or player.
-        let (code, response) = route(&Method::Post, "/play", body, &app);
+        let (code, response) = route(&Method::POST, "/play", body, &app).await;
         assert_eq!(code, 200);
         assert_eq!(resolves.load(Ordering::SeqCst), 1);
         let value: serde_json::Value = serde_json::from_str(&response).unwrap();
@@ -283,11 +325,12 @@ mod tests {
 
         // A different playlist still switches.
         route(
-            &Method::Post,
+            &Method::POST,
             "/play",
             r#"{"playlist_url": "https://example.com/y.pls"}"#,
             &app,
-        );
+        )
+        .await;
         for _ in 0..500 {
             if app.status.lock().unwrap().playlist_url.as_deref()
                 == Some("https://example.com/y.pls")
@@ -297,22 +340,23 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         }
         assert_eq!(resolves.load(Ordering::SeqCst), 2);
-        route(&Method::Post, "/stop", "", &app);
+        route(&Method::POST, "/stop", "", &app).await;
         wait_for_state(&app, State::Stopped);
     }
 
-    #[test]
-    fn pause_and_resume_round_trip() {
+    #[tokio::test]
+    async fn pause_and_resume_round_trip() {
         let app = test_app(ok_resolver());
         route(
-            &Method::Post,
+            &Method::POST,
             "/play",
             r#"{"playlist_url": "https://example.com/x.pls"}"#,
             &app,
-        );
+        )
+        .await;
         wait_for_state(&app, State::Playing);
 
-        let (code, _) = route(&Method::Post, "/pause", "", &app);
+        let (code, _) = route(&Method::POST, "/pause", "", &app).await;
         assert_eq!(code, 200);
         wait_for_state(&app, State::Paused);
         {
@@ -329,81 +373,83 @@ mod tests {
         }
 
         // Pause while paused: no-op 200.
-        let (code, _) = route(&Method::Post, "/pause", "", &app);
+        let (code, _) = route(&Method::POST, "/pause", "", &app).await;
         assert_eq!(code, 200);
         assert_eq!(app.status.lock().unwrap().state, State::Paused);
 
-        let (code, _) = route(&Method::Post, "/resume", "", &app);
+        let (code, _) = route(&Method::POST, "/resume", "", &app).await;
         assert_eq!(code, 200);
         wait_for_state(&app, State::Playing);
 
         // Resume while playing: no-op 200.
-        let (code, _) = route(&Method::Post, "/resume", "", &app);
+        let (code, _) = route(&Method::POST, "/resume", "", &app).await;
         assert_eq!(code, 200);
         assert_eq!(app.status.lock().unwrap().state, State::Playing);
 
-        route(&Method::Post, "/stop", "", &app);
+        route(&Method::POST, "/stop", "", &app).await;
         wait_for_state(&app, State::Stopped);
     }
 
-    #[test]
-    fn pause_and_resume_while_stopped_are_409() {
+    #[tokio::test]
+    async fn pause_and_resume_while_stopped_are_409() {
         let app = test_app(ok_resolver());
         for path in ["/pause", "/resume"] {
-            let (code, response) = route(&Method::Post, path, "", &app);
+            let (code, response) = route(&Method::POST, path, "", &app).await;
             assert_eq!(code, 409, "path {path}");
             let value: serde_json::Value = serde_json::from_str(&response).unwrap();
             assert_eq!(value["error"], "nothing is playing");
         }
     }
 
-    #[test]
-    fn play_same_playlist_while_paused_resumes_without_refetch() {
+    #[tokio::test]
+    async fn play_same_playlist_while_paused_resumes_without_refetch() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let resolves = Arc::new(AtomicUsize::new(0));
         let counter = resolves.clone();
-        let app = test_app(Box::new(move |_| {
+        let app = test_app(Arc::new(move |_| {
             counter.fetch_add(1, Ordering::SeqCst);
             Ok("https://example.com/stream".to_string())
         }));
 
         let body = r#"{"playlist_url": "https://example.com/x.pls"}"#;
-        route(&Method::Post, "/play", body, &app);
+        route(&Method::POST, "/play", body, &app).await;
         wait_for_state(&app, State::Playing);
-        route(&Method::Post, "/pause", "", &app);
+        route(&Method::POST, "/pause", "", &app).await;
         wait_for_state(&app, State::Paused);
 
         // /play for the paused station resumes it; the playlist is not
         // fetched again.
-        let (code, _) = route(&Method::Post, "/play", body, &app);
+        let (code, _) = route(&Method::POST, "/play", body, &app).await;
         assert_eq!(code, 200);
         wait_for_state(&app, State::Playing);
         assert_eq!(resolves.load(Ordering::SeqCst), 1);
 
-        route(&Method::Post, "/stop", "", &app);
+        route(&Method::POST, "/stop", "", &app).await;
         wait_for_state(&app, State::Stopped);
     }
 
-    #[test]
-    fn play_different_playlist_while_paused_switches() {
+    #[tokio::test]
+    async fn play_different_playlist_while_paused_switches() {
         let app = test_app(ok_resolver());
         route(
-            &Method::Post,
+            &Method::POST,
             "/play",
             r#"{"playlist_url": "https://example.com/x.pls"}"#,
             &app,
-        );
+        )
+        .await;
         wait_for_state(&app, State::Playing);
-        route(&Method::Post, "/pause", "", &app);
+        route(&Method::POST, "/pause", "", &app).await;
         wait_for_state(&app, State::Paused);
 
         route(
-            &Method::Post,
+            &Method::POST,
             "/play",
             r#"{"playlist_url": "https://example.com/y.pls"}"#,
             &app,
-        );
+        )
+        .await;
         wait_for_state(&app, State::Playing);
         assert_eq!(
             app.status.lock().unwrap().playlist_url.as_deref(),
@@ -411,13 +457,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn volume_route_scales_percentage_of_max_volume() {
+    #[tokio::test]
+    async fn volume_route_scales_percentage_of_max_volume() {
         let app = test_app(ok_resolver());
         // Default max_volume is 50; requests are percentages of it.
         for (requested, effective) in [(0u8, 0u64), (30, 15), (50, 25), (80, 40), (100, 50)] {
             let body = format!(r#"{{"volume": {requested}}}"#);
-            let (code, response) = route(&Method::Post, "/volume", &body, &app);
+            let (code, response) = route(&Method::POST, "/volume", &body, &app).await;
             assert_eq!(code, 200, "requested {requested}");
             let value: serde_json::Value = serde_json::from_str(&response).unwrap();
             assert_eq!(value["volume"], effective, "requested {requested}");
@@ -425,8 +471,8 @@ mod tests {
         assert_eq!(app.status.lock().unwrap().volume, 50);
     }
 
-    #[test]
-    fn volume_out_of_range_or_malformed_is_400() {
+    #[tokio::test]
+    async fn volume_out_of_range_or_malformed_is_400() {
         let app = test_app(ok_resolver());
         for body in [
             r#"{"volume": 101}"#,
@@ -437,7 +483,7 @@ mod tests {
             "{}",
             "",
         ] {
-            let (code, response) = route(&Method::Post, "/volume", body, &app);
+            let (code, response) = route(&Method::POST, "/volume", body, &app).await;
             assert_eq!(code, 400, "body {body:?}");
             let value: serde_json::Value = serde_json::from_str(&response).unwrap();
             assert!(value["error"].is_string());
@@ -446,38 +492,39 @@ mod tests {
         assert_eq!(app.status.lock().unwrap().volume, 25);
     }
 
-    #[test]
-    fn mute_and_unmute_leave_volume_untouched() {
+    #[tokio::test]
+    async fn mute_and_unmute_leave_volume_untouched() {
         let app = test_app(ok_resolver());
-        route(&Method::Post, "/volume", r#"{"volume": 40}"#, &app);
+        route(&Method::POST, "/volume", r#"{"volume": 40}"#, &app).await;
         let effective = 20; // 40% of the default max_volume 50
 
-        let (code, response) = route(&Method::Post, "/mute", "", &app);
+        let (code, response) = route(&Method::POST, "/mute", "", &app).await;
         assert_eq!(code, 200);
         let value: serde_json::Value = serde_json::from_str(&response).unwrap();
         assert_eq!(value["muted"], true);
         assert_eq!(value["volume"], effective);
 
-        let (code, response) = route(&Method::Post, "/unmute", "", &app);
+        let (code, response) = route(&Method::POST, "/unmute", "", &app).await;
         assert_eq!(code, 200);
         let value: serde_json::Value = serde_json::from_str(&response).unwrap();
         assert_eq!(value["muted"], false);
         assert_eq!(value["volume"], effective);
     }
 
-    #[test]
-    fn volume_and_mute_take_effect_mid_play() {
+    #[tokio::test]
+    async fn volume_and_mute_take_effect_mid_play() {
         // Skip past samples that may already be in flight in the chunk the
         // player was writing when the route ran.
         const SKIP: usize = 4 * 2048;
 
         let (app, sink) = test_app_with_sink(ok_resolver());
         route(
-            &Method::Post,
+            &Method::POST,
             "/play",
             r#"{"playlist_url": "https://example.com/x.pls"}"#,
             &app,
-        );
+        )
+        .await;
         wait_for_state(&app, State::Playing);
 
         let tail_after = |start: usize| {
@@ -495,7 +542,7 @@ mod tests {
         // Drop the volume to 10% of the cap (an effective device volume of
         // 5): the tail must scale down, but not to silence.
         let mark = sink.samples.lock().unwrap().len();
-        route(&Method::Post, "/volume", r#"{"volume": 10}"#, &app);
+        route(&Method::POST, "/volume", r#"{"volume": 10}"#, &app).await;
         assert_eq!(app.status.lock().unwrap().volume, 5);
         let tail = tail_after(mark);
         let bound = (0.05 * f32::from(i16::MAX)) as i32 + 1;
@@ -505,35 +552,35 @@ mod tests {
 
         // Mute: the tail must be pure silence.
         let mark = sink.samples.lock().unwrap().len();
-        route(&Method::Post, "/mute", "", &app);
+        route(&Method::POST, "/mute", "", &app).await;
         let tail = tail_after(mark);
         assert!(tail.iter().all(|s| *s == 0), "muted audio is not silent");
 
         // Unmute: audio returns at the remembered volume.
         let mark = sink.samples.lock().unwrap().len();
-        route(&Method::Post, "/unmute", "", &app);
+        route(&Method::POST, "/unmute", "", &app).await;
         let tail = tail_after(mark);
         let peak = tail.iter().map(|s| i32::from(*s).abs()).max().unwrap();
         assert!(peak > 0 && peak <= bound, "peak {peak} after unmute");
 
-        route(&Method::Post, "/stop", "", &app);
+        route(&Method::POST, "/stop", "", &app).await;
         wait_for_state(&app, State::Stopped);
     }
 
-    #[test]
-    fn wrong_method_on_volume_routes_is_404() {
+    #[tokio::test]
+    async fn wrong_method_on_volume_routes_is_404() {
         let app = test_app(ok_resolver());
         for path in ["/volume", "/mute", "/unmute"] {
-            let (code, _) = route(&Method::Get, path, "", &app);
+            let (code, _) = route(&Method::GET, path, "", &app).await;
             assert_eq!(code, 404, "path {path}");
         }
     }
 
-    #[test]
-    fn play_with_malformed_body_is_400() {
+    #[tokio::test]
+    async fn play_with_malformed_body_is_400() {
         let app = test_app(ok_resolver());
         for body in ["", "{}", "not json", r#"{"playlist_url": 42}"#] {
-            let (code, response) = route(&Method::Post, "/play", body, &app);
+            let (code, response) = route(&Method::POST, "/play", body, &app).await;
             assert_eq!(code, 400, "body {body:?}");
             let value: serde_json::Value = serde_json::from_str(&response).unwrap();
             assert!(value["error"].is_string());
@@ -541,36 +588,37 @@ mod tests {
         assert_eq!(app.status.lock().unwrap().state, State::Stopped);
     }
 
-    #[test]
-    fn play_with_failing_playlist_is_502() {
-        let app = test_app(Box::new(|url| {
+    #[tokio::test]
+    async fn play_with_failing_playlist_is_502() {
+        let app = test_app(Arc::new(|url| {
             Err(PlsError::Fetch(format!("connection refused: {url}")))
         }));
         let (code, response) = route(
-            &Method::Post,
+            &Method::POST,
             "/play",
             r#"{"playlist_url": "https://example.com/x.pls"}"#,
             &app,
-        );
+        )
+        .await;
         assert_eq!(code, 502);
         let value: serde_json::Value = serde_json::from_str(&response).unwrap();
         assert!(value["error"].as_str().unwrap().contains("cannot fetch"));
         assert_eq!(app.status.lock().unwrap().state, State::Stopped);
     }
 
-    #[test]
-    fn unknown_path_is_json_404() {
+    #[tokio::test]
+    async fn unknown_path_is_json_404() {
         let app = test_app(ok_resolver());
-        let (code, body) = route(&Method::Get, "/nope", "", &app);
+        let (code, body) = route(&Method::GET, "/nope", "", &app).await;
         assert_eq!(code, 404);
         let value: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(value["error"], "not found");
     }
 
-    #[test]
-    fn wrong_method_on_status_is_404() {
+    #[tokio::test]
+    async fn wrong_method_on_status_is_404() {
         let app = test_app(ok_resolver());
-        let (code, _) = route(&Method::Post, "/status", "", &app);
+        let (code, _) = route(&Method::POST, "/status", "", &app).await;
         assert_eq!(code, 404);
     }
 }

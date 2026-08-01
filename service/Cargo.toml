@@ -19,6 +19,14 @@ tiny_http = "0.12"
 toml = "0.8"
 ureq = "3.3.0"
 
+# The control plane: a current-thread tokio runtime (one ARMv6 core — a
+# multi-thread scheduler buys nothing) serving the loopback API via hyper.
+# The audio path stays on blocking OS threads.
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+tokio = { version = "1", features = ["rt", "net", "signal", "sync", "time", "macros"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 alsa = "0.9"
 

@@ -29,8 +29,10 @@ hardware/ALSA mixer volume.
 ## Hardware constraints
 
 Target is a Pi Zero W 1.0: single-core 32-bit **ARMv6** (Rust target
-`arm-unknown-linux-gnueabihf`, not armv7), 512 MB RAM. Prefer small, blocking,
-few-dependency solutions over heavy frameworks and async runtimes.
+`arm-unknown-linux-gnueabihf`, not armv7), 512 MB RAM. Prefer small,
+few-dependency solutions over heavy frameworks. The one async runtime is
+the **current-thread** tokio runtime that owns the control plane (HTTP API,
+later AirPlay); the audio path stays blocking (see below).
 
 ## How we work: plan-based development in PR stacks
 
@@ -80,8 +82,14 @@ merged history keeps its shape.
 - Run `cargo test`, `cargo clippy` and `cargo fmt` before considering a
   change done.
 - Keep dependencies minimal and justify new ones in the PR description. The
-  approved core set: `ffmpeg-next`, `alsa`, `tiny_http`, `ureq`, `serde`,
-  `toml`. No async runtimes.
+  approved core set: `ffmpeg-next`, `alsa`, `tokio`, `hyper` (with
+  `hyper-util` and `http-body-util`), `ureq`, `serde`, `toml`.
+- **Async is for the control plane only.** The HTTP API (and later the
+  embedded AirPlay receiver) runs on a current-thread tokio runtime;
+  blocking calls in handlers go through `spawn_blocking`. The audio path —
+  player thread, pipeline, sinks — stays on dedicated OS threads with
+  blocking I/O: ALSA's blocking `writei` *is* the pacing mechanism. Never
+  make the audio path async; channels bridge the two worlds.
 - Audio output goes through an `AudioSink` trait. The ALSA implementation is
   Linux-only (`#[cfg(target_os = "linux")]` — the `alsa` crate does not
   compile on macOS); a dev sink (null / WAV file) keeps the crate building
