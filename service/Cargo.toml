@@ -18,13 +18,17 @@ serde_json = "1"
 toml = "0.8"
 ureq = "3.3.0"
 
-# The control plane: a current-thread tokio runtime (one ARMv6 core — a
-# multi-thread scheduler buys nothing) serving the loopback API via hyper.
-# The audio path stays on blocking OS threads.
+# The control plane: a current-thread tokio runtime serving the loopback
+# API via hyper. The audio path stays on blocking OS threads.
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
-tokio = { version = "1", features = ["rt", "net", "signal", "sync", "time", "macros"] }
+tokio = { version = "1", features = ["rt", "net", "signal", "sync", "time", "macros", "io-util"] }
+
+# The embedded AirPlay 2 receiver (milestone 11): network -> PCM + events,
+# pure Rust (symphonia AAC, RustCrypto, zbus for Avahi), runs on our tokio
+# runtime. The bridge into the pipeline lives in src/airplay.rs.
+openairplay2 = { git = "https://github.com/st3fan/openairplay2" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 alsa = "0.9"

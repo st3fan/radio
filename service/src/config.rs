@@ -30,6 +30,33 @@ pub enum MixerCeiling {
     Percent(u8),
 }
 
+/// The embedded AirPlay receiver (milestone 11).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AirplayConfig {
+    pub enabled: bool,
+    /// The name shown in Apple devices' AirPlay pickers.
+    pub name: String,
+    pub port: u16,
+    /// When an AirPlay session ends, resume the preempted station.
+    pub resume_radio: bool,
+    /// The receiver identity (keypair): state, not config — senders
+    /// remember the receiver by it, so it must survive upgrades.
+    pub identity_path: std::path::PathBuf,
+}
+
+impl Default for AirplayConfig {
+    fn default() -> Self {
+        AirplayConfig {
+            // AirPlay needs Avahi over D-Bus: on by default on Linux only.
+            enabled: cfg!(target_os = "linux"),
+            name: "Radio".to_string(),
+            port: 7000,
+            resume_radio: true,
+            identity_path: std::path::PathBuf::from("/var/lib/radiod/airplay-identity"),
+        }
+    }
+}
+
 /// Loaded configuration. `initial_volume` is a plain 0-100 volume; the
 /// speaker-protecting ceiling is the `[mixer]` section, required when
 /// playing through ALSA.
@@ -39,6 +66,7 @@ pub struct Config {
     pub audio_device: String,
     pub initial_volume: u8,
     pub mixer: Option<MixerConfig>,
+    pub airplay: AirplayConfig,
 }
 
 impl Default for Config {
@@ -48,6 +76,7 @@ impl Default for Config {
             audio_device: DEFAULT_AUDIO_DEVICE.to_string(),
             initial_volume: DEFAULT_INITIAL_VOLUME,
             mixer: None,
+            airplay: AirplayConfig::default(),
         }
     }
 }
@@ -82,6 +111,7 @@ struct RawConfig {
     max_volume: Option<u8>,
     initial_volume: Option<u8>,
     mixer: Option<RawMixerConfig>,
+    airplay: Option<RawAirplayConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,6 +121,16 @@ struct RawMixerConfig {
     device: Option<String>,
     ceiling_db: Option<f32>,
     ceiling_percent: Option<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAirplayConfig {
+    enabled: Option<bool>,
+    name: Option<String>,
+    port: Option<u16>,
+    resume_radio: Option<bool>,
+    identity_path: Option<String>,
 }
 
 impl Config {
@@ -141,11 +181,37 @@ impl Config {
             Some(raw_mixer) => Some(Config::validate_mixer(raw_mixer)?),
         };
 
+        let airplay_defaults = AirplayConfig::default();
+        let airplay = match raw.airplay {
+            None => airplay_defaults,
+            Some(raw_airplay) => {
+                let name = raw_airplay.name.unwrap_or(airplay_defaults.name);
+                if name.is_empty() {
+                    return Err(ConfigError::Invalid(
+                        "[airplay] name must not be empty".to_string(),
+                    ));
+                }
+                AirplayConfig {
+                    enabled: raw_airplay.enabled.unwrap_or(airplay_defaults.enabled),
+                    name,
+                    port: raw_airplay.port.unwrap_or(airplay_defaults.port),
+                    resume_radio: raw_airplay
+                        .resume_radio
+                        .unwrap_or(airplay_defaults.resume_radio),
+                    identity_path: raw_airplay
+                        .identity_path
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or(airplay_defaults.identity_path),
+                }
+            }
+        };
+
         Ok(Config {
             listen,
             audio_device: raw.audio_device.unwrap_or(defaults.audio_device),
             initial_volume,
             mixer,
+            airplay,
         })
     }
 
