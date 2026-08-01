@@ -4,9 +4,11 @@
 - **Status:** draft — presents researched options; Stefan picks the approach
 - **Goal:** build `radiod` .deb packages for **amd64**, **arm64**, and
   **armv6** (Pi Zero W) plus the `Architecture: all` website .deb, from
-  the Debian 13 build box, **without Docker or emulation** — and reuse the
-  same scripts in a tag-triggered GitHub Actions workflow that attaches
-  the .debs to a GitHub Release.
+  the Debian 13 build box — and reuse the same scripts in a
+  tag-triggered GitHub Actions workflow that attaches the .debs to a
+  GitHub Release. Docker is allowed (per review); emulated *compiles*
+  are still to be avoided, and rsyncing a sysroot from the Pi is not an
+  option — the Pi is never build infrastructure.
 
 ## Background
 
@@ -99,10 +101,10 @@ container:
 - **armv6** — keep the **proven** build-pi.sh environment (Debian
   `gcc-arm-linux-gnueabihf` as linker, `-B` flags stealing crt/libgcc
   from the sysroot, the stubs-soft.h shim, the Raspbian pixfmt hiding),
-  but replace the sysroot *source*: a new `make-rpi-sysroot.sh` assembles
-  it from **Raspbian trixie repo .debs** (`apt download`-style fetch +
-  `dpkg -x` + symlink relativization) instead of rsyncing a live Pi.
-  The Pi stops being build infrastructure.
+  but replace the sysroot *source* with `make-rpi-sysroot.sh`, built
+  from the Raspbian trixie archive with no Pi involved (see "What
+  Docker changes" below for the two candidate mechanisms). The rsync
+  path is removed, not kept as a fallback.
 - **Packaging** — `cargo deb --target` with the existing **explicit
   pinned Depends** (this sidesteps the known cross-arch
   `dpkg-shlibdeps` fragility entirely; trixie package names are
@@ -122,6 +124,39 @@ container:
   release via `softprops/action-gh-release`. Sysroot + cargo caches via
   `actions/cache` keyed on the sysroot package list. Version: Cargo.toml
   stays the source of truth; the workflow fails if the tag disagrees.
+
+## What Docker changes (allowed after plan review)
+
+Docker was re-allowed during review. Assessment: it simplifies **sysroot
+assembly** and **environment hygiene**, and nothing else — the compile
+strategy above is unchanged either way.
+
+1. **armv6 sysroot assembly (the real win).** Instead of hand-rolling
+   dependency-closure resolution against the Raspbian archive, run a
+   Raspbian trixie armhf image under `docker run --platform linux/arm/v6`
+   (qemu/binfmt), `apt-get install` the dev packages with real apt, then
+   `docker export` the filesystem and relativize absolute symlinks.
+   Emulation is confined to a few minutes of apt; every compile remains a
+   native cross-compile. The Docker-free alternative is
+   `debootstrap --foreign --include=…` with the Raspbian keyring (its
+   first stage is pure download+extract, no emulation) — kept as the
+   fallback if image availability/quality for Raspbian trixie armv6
+   disappoints. **Decide in phase 2 by trying the Docker route first.**
+2. **Containerized builds on the box (optional hygiene).** Running
+   `build-deb.sh` inside `debian:trixie` containers instead of
+   installing multiarch/cross tooling on the host makes the box and CI
+   literally identical environments. The scripts must work in both
+   settings anyway (CI runs them in containers), so this costs nothing
+   to support; whether the box uses the container wrapper or the bare
+   host is Stefan's preference.
+3. **What Docker does *not* buy:** `cross`-rs remains a poor fit even
+   with Docker allowed — Ubuntu-based images (wrong libav for Debian 13
+   targets), and its ARMv6 image still can't apt-install a usable
+   FFmpeg (Debian armhf = ARMv7), so we would maintain custom images
+   containing the same sysroot work. Building *natively under full
+   emulation* (cargo inside an armhf container) removes all cross
+   gotchas but makes builds 10–30× slower (qemu-user running rustc,
+   clang and bindgen) both locally and in CI — rejected.
 
 ### Alternatives considered (kept as fallbacks)
 
@@ -157,13 +192,13 @@ wrapper behavior, `Multi-Arch: same` co-installs of the libav dev set.
 
 ### Phase 2 — Pi-free armv6 sysroot
 
-`service/make-rpi-sysroot.sh`: fetch the pinned package closure from the
-Raspbian trixie archive (Raspbian keyring verified), extract with
-`dpkg -x`, relativize symlinks, apply the two header fixups
-(stubs-soft.h shim, vendor pixfmt hiding). Fold build-pi.sh's build/deb
-targets into `build-deb.sh armv6`; retire the rsync path (or keep
-`sync` as a documented escape hatch). Verify: binary runs on the actual
-Pi Zero; `readelf -A` clean; .deb installs there.
+`service/make-rpi-sysroot.sh`: assemble the sysroot from the Raspbian
+trixie archive — Docker/binfmt apt-install + export first, debootstrap
+`--foreign` as the fallback (see "What Docker changes") — then
+relativize symlinks and apply the two header fixups (stubs-soft.h shim,
+vendor pixfmt hiding). Fold build-pi.sh's build/deb targets into
+`build-deb.sh armv6`; delete the rsync path. Verify: binary runs on the
+actual Pi Zero; `readelf -A` clean; .deb installs there.
 
 ### Phase 3 — GitHub release workflow
 
