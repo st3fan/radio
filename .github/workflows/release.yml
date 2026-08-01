@@ -120,4 +120,6 @@ jobs:
           mv radio-website_*_all.deb dist/
           cd dist
           sha256sum -- * > SHA256SUMS
-          gh release upload "$TAG" --clobber -- *
+          # --repo: skip gh's git-based repo detection, which trips over
+          # the container/host ownership mismatch of the workspace.
+          gh release upload --repo "$GITHUB_REPOSITORY" "$TAG" --clobber -- *
