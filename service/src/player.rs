@@ -874,10 +874,11 @@ mod tests {
     }
 
     #[test]
-    fn samples_written_respect_max_volume() {
-        // Full-scale sine through the pipeline with volume at the cap: no
-        // sample may exceed max_volume percent of full scale.
-        let status = playing_status("max_volume = 50\ninitial_volume = 100");
+    fn samples_written_respect_the_volume() {
+        // Full-scale sine through the pipeline at volume 50: no sample may
+        // exceed half of full scale. (The hardware ceiling lives in the
+        // mixer now; this guards the software half — gain never amplifies.)
+        let status = playing_status("initial_volume = 50");
         assert_eq!(status.lock().unwrap().volume, 50);
         let sink = TestSink::default();
         let player = spawn(status.clone(), Box::new(sink.clone()), sine_factory());

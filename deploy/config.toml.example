@@ -1,5 +1,4 @@
-# Configuration for radiod. All settings are optional; the values shown
-# for the commented-out entries are the defaults.
+# Configuration for radiod. Commented-out entries show the defaults.
 
 # The ALSA output device. Find yours with `aplay -l`; the plughw prefix
 # lets ALSA convert sample rates/formats the hardware does not support.
@@ -8,9 +7,21 @@ audio_device = "plughw:0,0"
 # The HTTP API endpoint. Must be a loopback address.
 #listen = "127.0.0.1:8080"
 
-# The hard volume cap (0-100). The audio level can NEVER exceed this, no
-# matter what the API is asked. Think of your speakers and neighbours.
-#max_volume = 50
-
-# The volume at startup, as a percentage of max_volume (100 = the cap).
+# The volume at startup (0-100).
 #initial_volume = 50
+
+# The hardware output ceiling — the speaker protection. radiod sets this
+# mixer control to the ceiling at startup and re-asserts it whenever
+# playback (re)starts, so alsamixer, a boot-time `alsactl restore`, or a
+# re-enumerating USB DAC cannot leave the output loud. The digital path
+# runs at full scale; the ceiling is the loudest the speakers can get.
+#
+# Required when playing through ALSA. Discover control names with
+# `amixer -c<card> scontrols`. Prefer ceiling_db (0 = full scale,
+# negative = quieter); use ceiling_percent only for controls without dB
+# info (the raw scale may be nonlinear).
+[mixer]
+control = "PCM"
+ceiling_db = -12.0
+#device = "hw:0"        # derived from audio_device when omitted
+#ceiling_percent = 40   # instead of ceiling_db, never both

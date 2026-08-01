@@ -1,5 +1,6 @@
 mod config;
 mod icy;
+mod mixer;
 mod pipeline;
 mod player;
 mod pls;
@@ -102,6 +103,29 @@ fn make_source(stream_url: &str) -> Result<Box<dyn Source>, SourceError> {
     Ok(Box::new(FfmpegSource::open(stream_url)?))
 }
 
+/// The mixer that owns the hardware ceiling: required for the alsa sink
+/// (playing without a ceiling is the one unacceptable outcome), absent for
+/// the dev sinks.
+fn make_mixer(
+    args: &Args,
+    config: &Config,
+) -> Result<Option<Box<dyn mixer::MixerControl>>, String> {
+    if args.sink.as_deref().unwrap_or(DEFAULT_SINK) != "alsa" {
+        return Ok(None);
+    }
+    let Some(mixer_config) = config.mixer.clone() else {
+        return Err(
+            "the alsa sink needs a [mixer] section in the config: radiod owns \
+             the hardware ceiling that protects the speakers (control = \"...\" \
+             plus ceiling_db or ceiling_percent; see config.toml.example)"
+                .to_string(),
+        );
+    };
+    mixer::make_alsa_mixer(&config.audio_device, mixer_config)
+        .map(Some)
+        .map_err(|err| err.to_string())
+}
+
 // Current-thread flavor: the Pi Zero has one ARMv6 core, so a multi-thread
 // scheduler buys nothing. Blocking work (playlist fetches) still runs on
 // tokio's separate blocking pool; audio runs on its own OS thread.
@@ -131,6 +155,25 @@ async fn main() -> ExitCode {
         }
     };
 
+    let mut mixer = match make_mixer(&args, &config) {
+        Ok(mixer) => mixer,
+        Err(err) => {
+            eprintln!("radiod: {err}");
+            return ExitCode::from(2);
+        }
+    };
+
+    // Assert the hardware ceiling before anything can play. Refusing to
+    // start beats playing at an unknown level.
+    let mut initial_status = Status::initial(&config);
+    if let Some(mixer) = mixer.as_mut() {
+        if let Err(err) = mixer.assert_ceiling() {
+            eprintln!("radiod: mixer: {err}");
+            return ExitCode::FAILURE;
+        }
+        initial_status.mixer = "ok".to_string();
+    }
+
     let listener = match tokio::net::TcpListener::bind(config.listen).await {
         Ok(listener) => listener,
         Err(err) => {
@@ -139,7 +182,7 @@ async fn main() -> ExitCode {
         }
     };
 
-    let status = Arc::new(Mutex::new(Status::initial(&config)));
+    let status = Arc::new(Mutex::new(initial_status));
     let player = player::spawn(status.clone(), sink, Box::new(make_source));
     let app = Arc::new(server::App {
         status: status.clone(),
