@@ -78,18 +78,20 @@ pub fn spawn(
     sink: Box<dyn AudioSink>,
     source_factory: SourceFactory,
 ) -> Player {
-    spawn_with_tuning(status, sink, source_factory, Tuning::default())
+    spawn_with_tuning(status, sink, source_factory, Tuning::default()).0
 }
 
+/// Also returns the thread's join handle: the thread exits (closing the
+/// sink) when every `Player` handle is dropped.
 pub fn spawn_with_tuning(
     status: Arc<Mutex<Status>>,
     sink: Box<dyn AudioSink>,
     source_factory: SourceFactory,
     tuning: Tuning,
-) -> Player {
+) -> (Player, std::thread::JoinHandle<()>) {
     let (tx, rx) = channel();
-    std::thread::spawn(move || run(&rx, &status, sink, &source_factory, tuning));
-    Player { tx }
+    let handle = std::thread::spawn(move || run(&rx, &status, sink, &source_factory, tuning));
+    (Player { tx }, handle)
 }
 
 fn run(
@@ -558,7 +560,7 @@ mod tests {
             *opens_in_factory.lock().unwrap() += 1;
             Err(SourceError("cannot connect".to_string()))
         });
-        let player = spawn_with_tuning(
+        let (player, _) = spawn_with_tuning(
             status.clone(),
             Box::new(sink.clone()),
             factory,
@@ -593,7 +595,7 @@ mod tests {
                 Ok(Box::new(SineSource::new()))
             }
         });
-        let player = spawn_with_tuning(
+        let (player, _) = spawn_with_tuning(
             status.clone(),
             Box::new(sink.clone()),
             factory,
@@ -623,7 +625,7 @@ mod tests {
             *opens_in_factory.lock().unwrap() += 1;
             Ok(Box::new(TimedSource::new(Duration::from_millis(10))))
         });
-        let player = spawn_with_tuning(
+        let (player, _) = spawn_with_tuning(
             status.clone(),
             Box::new(sink.clone()),
             factory,
@@ -657,7 +659,8 @@ mod tests {
             initial_backoff: Duration::from_secs(30),
             ..test_tuning()
         };
-        let player = spawn_with_tuning(status.clone(), Box::new(sink.clone()), factory, tuning);
+        let (player, _) =
+            spawn_with_tuning(status.clone(), Box::new(sink.clone()), factory, tuning);
 
         player.send(Command::Play {
             playlist_url: "https://example.com/bad.pls".to_string(),
@@ -687,7 +690,8 @@ mod tests {
             max_backoff: Duration::from_millis(80),
             stable_after: Duration::from_secs(60),
         };
-        let player = spawn_with_tuning(status.clone(), Box::new(sink.clone()), factory, tuning);
+        let (player, _) =
+            spawn_with_tuning(status.clone(), Box::new(sink.clone()), factory, tuning);
 
         player.send(Command::Play {
             playlist_url: "https://example.com/bad.pls".to_string(),
@@ -728,7 +732,8 @@ mod tests {
             max_backoff: Duration::from_millis(400),
             stable_after: Duration::from_millis(30),
         };
-        let player = spawn_with_tuning(status.clone(), Box::new(sink.clone()), factory, tuning);
+        let (player, _) =
+            spawn_with_tuning(status.clone(), Box::new(sink.clone()), factory, tuning);
 
         player.send(Command::Play {
             playlist_url: "https://example.com/test.pls".to_string(),
@@ -847,6 +852,25 @@ mod tests {
         let status = status.lock().unwrap();
         assert_eq!(status.playlist_url, None);
         assert_eq!(status.stream_url, None);
+    }
+
+    #[test]
+    fn dropping_all_handles_stops_the_thread_and_closes_the_sink() {
+        let status = playing_status("");
+        let sink = TestSink::default();
+        let (player, handle) = spawn_with_tuning(
+            status.clone(),
+            Box::new(sink.clone()),
+            sine_factory(),
+            Tuning::default(),
+        );
+        start_playing(&player, &status);
+
+        // Closing the command channel is the shutdown path: the play loop
+        // notices the disconnect, closes the sink, and the thread exits.
+        drop(player);
+        handle.join().expect("player thread panicked");
+        assert!(*sink.closed.lock().unwrap());
     }
 
     #[test]

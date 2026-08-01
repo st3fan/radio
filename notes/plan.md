@@ -75,7 +75,7 @@ playlist URL (.pls)
 |--------------------|-----------------------------------|-------|
 | Streaming + decode | `ffmpeg-next`                     | Safe wrapper over libav*. Maintenance-mode but kept compiling against FFmpeg 3.4–8.0, so it works with whatever Raspberry Pi OS ships (trixie: 7.1). Features trimmed to `codec`/`format`/`software-resampling` so libavfilter/libavdevice are not needed on the Pi. Alternative if we hit a wall: `rsmpeg`. |
 | ALSA output        | `alsa` crate (libasound bindings) | Use `plughw:...` so ALSA converts rate/format if needed. Behind an `AudioSink` trait: ALSA is Linux-only, and a dev sink keeps macOS builds/tests green and makes the gain clamp assertable in tests. |
-| HTTP server        | `tiny_http`                       | The API is tiny; a small threaded server beats pulling in tokio/axum on a single ARMv6 core. |
+| HTTP server        | `hyper` on tokio                  | Served by `tiny_http` through milestone 8; milestone 9 moved the control plane onto a current-thread tokio runtime (see `plans/20260801-09-async-tokio.md`) so milestone 11 can embed the async openairplay2 library. Raw hyper, not axum: the hand-rolled router is the API contract and the dependency tree stays smaller. |
 | HTTP client        | `ureq`                            | Only for fetching the `.pls` (a 5-line INI we parse by hand). |
 | Config             | `serde` + `toml`                  | |
 | Packaging          | `cargo-deb` (daemon), `dpkg-deb` (website) | See "Packaging & deployment" below. |
