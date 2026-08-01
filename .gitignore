@@ -22,3 +22,6 @@ target
 
 # Package build artifacts
 *.deb
+
+# Local scratch directory
+tmp/
