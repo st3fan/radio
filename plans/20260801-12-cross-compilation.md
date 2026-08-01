@@ -139,9 +139,29 @@ strategy above is unchanged either way.
    Emulation is confined to a few minutes of apt; every compile remains a
    native cross-compile. The Docker-free alternative is
    `debootstrap --foreign --include=…` with the Raspbian keyring (its
-   first stage is pure download+extract, no emulation) — kept as the
-   fallback if image availability/quality for Raspbian trixie armv6
-   disappoints. **Decide in phase 2 by trying the Docker route first.**
+   first stage is pure download+extract, no emulation).
+
+   **Image availability (checked 2026-08-01):** no current ARMv6
+   Raspbian image exists — `dtcooper/raspberrypi-os` is current but
+   arm64/arm-v7 only; `balenalib/rpi-raspbian` (true arm/v6) died in
+   2023; `balenalib/raspberry-pi[-debian]` are frozen at bullseye. The
+   Raspbian **trixie archive itself is complete** for our needs
+   (verified against the Packages index: libav* 7.1.5-0+deb13u1 —
+   identical to Debian trixie — libasound2-dev 1.2.14,
+   libgcc-14-dev 14.2.0+rpi1).
+
+   **Decision (Stefan): side project or not.** Since any image would be
+   debootstrap-built anyway, the choice is between (a) a small side
+   project (e.g. `st3fan/raspbian-docker`): a GH Actions cron workflow
+   that debootstraps a Raspbian trixie armv6 rootfs (keyring-verified;
+   second stage under binfmt in CI) and publishes
+   `ghcr.io/st3fan/raspbian:trixie` as linux/arm/v6 — radio's sysroot
+   script shrinks to run+install+export, and the image fills a genuine
+   public gap; or (b) no side project: `make-rpi-sysroot.sh` runs the
+   `debootstrap --foreign --include=…` logic inline (no emulation, no
+   image dependency). Recommendation: (a), with (b)'s logic as its
+   build mechanism so radio can inline it back if the side project
+   ever retires.
 2. **Containerized builds on the box (optional hygiene).** Running
    `build-deb.sh` inside `debian:trixie` containers instead of
    installing multiarch/cross tooling on the host makes the box and CI
