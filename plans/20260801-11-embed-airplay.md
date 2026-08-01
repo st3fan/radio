@@ -153,6 +153,18 @@ persistence across restarts, and record CPU/RSS numbers in this plan.
 Expected to be a formality on the A72; anything surprising gets recorded
 here before phase 2.
 
+**Results (2026-08-01):** the library turns out to be pure Rust
+(symphonia for AAC, RustCrypto ciphers, tokio-flavored zbus for Avahi —
+no pkg-config or bindgen anywhere in the lib; only the standalone
+binary adds `alsa`), so the arm64 cross-build needed nothing beyond the
+existing multiarch environment. On muzak: the `_airplay._tcp`
+advertisement appears immediately (listed alongside the household's
+real AirPlay devices), the identity keypair persists across restarts,
+and the idle footprint is ~5 MB RSS at <1 % CPU. The spike receiver is
+left running as **"Radio (spike)"** with radiod active beside it —
+outstanding items, which need Stefan's Apple devices: pair, stream,
+pause/seek, a long session, and under-load CPU numbers.
+
 ### Phase 2 — embed and arbitrate
 
 Add the git dependency; spawn `Receiver::run` on the tokio runtime (from
