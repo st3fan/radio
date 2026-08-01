@@ -1,7 +1,7 @@
 # Plan: replace max_volume with ALSA mixer ownership (milestone 10)
 
 - **Date:** 2026-08-01
-- **Status:** draft
+- **Status:** approved; implemented in this stack
 - **Order:** second of three (async → mixer ownership → AirPlay embed).
   Milestone 9 (async) is merged; this must land before the AirPlay embed
   so AirPlay volume maps onto the settled volume model.
