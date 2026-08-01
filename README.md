@@ -24,28 +24,39 @@ Two components, shipped as two Debian packages:
 - **`radio-website`** (`website/`) — plain PHP site: the SomaFM channel
   list with artwork, playback controls, now-playing display.
 
-## Building the packages
+## Getting the packages
 
-In any Debian environment — a Debian machine or a Docker container works
-equally well — with SSH access to the Pi for the sysroot sync (see
-`service/README.md` for prerequisites and the cross-compilation gotchas):
+**Releases**: publishing a GitHub Release (from a `v*` tag) builds and
+attaches `radiod_<version>_amd64.deb`, `radiod_<version>_arm64.deb`,
+`radio-website_<version>_all.deb` and a `SHA256SUMS` file — built
+natively on public runners inside `debian:trixie` containers by the
+same scripts used locally.
+
+**Local builds**, on any Debian 13 environment (see `service/README.md`
+for details):
 
 ```
-service/build-pi.sh sync <pi-host>   # once, and after Pi upgrades
-service/build-pi.sh deb              # → radiod_<version>_armhf.deb
+service/setup-build.sh cross         # once; multiarch toolchain for arm64
+service/build-deb.sh amd64           # → radiod_<version>_amd64.deb
+service/build-deb.sh arm64           # → radiod_<version>_arm64.deb
 deploy/build-website-deb.sh          # → radio-website_<version>_all.deb
 ```
 
-## Installing on the Pi
+The ARMv6 Pi Zero W path (`service/build-pi.sh`, needs SSH to the Pi)
+is legacy and remains only until that board is replaced by an arm64 one.
+
+## Installing on the radio device
 
 ```
-scp radiod_*_armhf.deb radio-website_*_all.deb <pi-host>:
-ssh <pi-host> apt install ./radiod_*_armhf.deb ./radio-website_*_all.deb
+scp radiod_*_arm64.deb radio-website_*_all.deb <host>:
+ssh <host> apt install ./radiod_*_arm64.deb ./radio-website_*_all.deb
 ```
 
 apt pulls all runtime dependencies (FFmpeg/ALSA libraries, lighttpd,
 php-fpm). Then set the ALSA device in `/etc/radio/config.toml` (find it
 with `aplay -l`) and `systemctl restart radiod`. The site is on port 80.
+(The current Pi Zero W still takes the legacy `_armhf.deb` from
+`build-pi.sh` until the hardware swap.)
 
 ## Development
 
