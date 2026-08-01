@@ -106,10 +106,13 @@ merged history keeps its shape.
   SSH for real-audio testing with real ALSA — test here regularly when
   audio code changes, since macOS gives no signal on the ALSA/Linux side.
   Same Debian library ecosystem as Raspberry Pi OS.
-- **Any Debian environment (packaging):** the ARMv6 cross-build and .deb
-  packaging run via `service/build-pi.sh` + `deploy/build-website-deb.sh`
-  in any Debian environment with SSH access to the Pi — the Debian PC or a
-  Docker container on the Mac both work.
+- **Any Debian 13 environment (packaging):** `.deb`s for amd64 and arm64
+  build via `service/setup-build.sh` + `service/build-deb.sh` (native, or
+  Debian-multiarch cross for arm64 on an amd64 host — no Docker, no
+  emulation) and `deploy/build-website-deb.sh`; the GitHub release
+  workflow runs the same scripts natively on public runners. The ARMv6
+  path (`service/build-pi.sh`, needs SSH to the Pi) is **legacy** until
+  the Pi Zero W is replaced by an arm64 board, then it gets retired.
 - **Pi Zero (target only):** runs the release packages. Never develop or
   build on it — one ARMv6 core and 512 MB make that a non-starter.
 

@@ -73,7 +73,32 @@ Volume requests take 0–100 as a **percentage of `max_volume`**: 100 means
 of 100 yields an effective device volume of 30. Responses and `/status`
 always show the effective value.
 
-## Cross-compiling for the Pi Zero W
+## Building .deb packages (amd64, arm64)
+
+On Debian 13 — the build box or a `debian:trixie` CI container:
+
+```
+./setup-build.sh cross          # once; "cross" adds the arm64 multiarch
+                                # toolchain (omit in CI, which builds natively)
+cargo install cargo-deb         # once, per user
+
+./build-deb.sh amd64            # native -> target/debian/
+./build-deb.sh arm64            # multiarch cross on the amd64 box; native in CI
+```
+
+The arm64 cross build is plain Debian multiarch: `:arm64` dev packages
+co-install next to the native ones (`Multi-Arch: same`), the
+`pkgconf:arm64` wrapper serves the arm64 `.pc` paths, and `build-deb.sh`
+exports the per-target linker/pkg-config/bindgen variables. No Docker,
+no emulation, no sysroot directory. The GitHub release workflow (see
+`.github/workflows/`) runs the same script natively on amd64 and arm64
+runners.
+
+## Cross-compiling for the Pi Zero W (legacy)
+
+**Legacy path**: the Pi Zero W (ARMv6) is being replaced by an arm64
+board; this section and `build-pi.sh` remain until that hardware swap
+completes, then get retired (see `../plans/20260801-12-cross-compilation.md`).
 
 The Pi Zero W 1 is ARMv6 (`arm-unknown-linux-gnueabihf`) — stock Debian
 armhf binaries are ARMv7 and will not run on it, and building on the Zero
