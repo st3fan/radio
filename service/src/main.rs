@@ -13,11 +13,13 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
+use std::time::{Duration, Instant};
+
 use config::Config;
 use pipeline::FfmpegSource;
 use sink::{AudioSink, NullSink, WavSink};
 use source::{Source, SourceError};
-use status::Status;
+use status::{State, Status};
 
 const USAGE: &str =
     "usage: radiod [--config <path>] [--sink alsa|null|wav:<path>] [-v | --version]";
@@ -100,7 +102,11 @@ fn make_source(stream_url: &str) -> Result<Box<dyn Source>, SourceError> {
     Ok(Box::new(FfmpegSource::open(stream_url)?))
 }
 
-fn main() -> ExitCode {
+// Current-thread flavor: the Pi Zero has one ARMv6 core, so a multi-thread
+// scheduler buys nothing. Blocking work (playlist fetches) still runs on
+// tokio's separate blocking pool; audio runs on its own OS thread.
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> ExitCode {
     let args = match parse_args() {
         Ok(args) => args,
         Err(err) => {
@@ -125,8 +131,8 @@ fn main() -> ExitCode {
         }
     };
 
-    let server = match tiny_http::Server::http(config.listen) {
-        Ok(server) => server,
+    let listener = match tokio::net::TcpListener::bind(config.listen).await {
+        Ok(listener) => listener,
         Err(err) => {
             eprintln!("radiod: cannot listen on {}: {err}", config.listen);
             return ExitCode::FAILURE;
@@ -135,17 +141,65 @@ fn main() -> ExitCode {
 
     let status = Arc::new(Mutex::new(Status::initial(&config)));
     let player = player::spawn(status.clone(), sink, Box::new(make_source));
-    let app = server::App {
-        status,
-        player,
-        resolver: Box::new(pls::resolve),
-    };
+    let app = Arc::new(server::App {
+        status: status.clone(),
+        player: player.clone(),
+        resolver: Arc::new(pls::resolve),
+    });
 
     println!(
         "radiod {} listening on http://{}",
         env!("CARGO_PKG_VERSION"),
         config.listen
     );
-    server::serve(&server, &app);
+    tokio::select! {
+        () = server::serve(listener, app) => {}
+        () = shutdown_signal() => {}
+    }
+
+    // Stop the player and wait for it to settle, so the sink is closed
+    // (ALSA drained) before the process exits. Waiting on the status
+    // instead of joining the thread keeps shutdown independent of any
+    // connection task that still holds a Player handle.
+    println!("radiod: shutting down");
+    player.send(player::Command::Stop);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while status.lock().expect("status lock poisoned").state != State::Stopped {
+        if Instant::now() >= deadline {
+            eprintln!("radiod: player did not stop in time");
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     ExitCode::SUCCESS
+}
+
+/// Resolves when the process receives SIGINT (ctrl-c) or SIGTERM (what
+/// systemd sends on `systemctl stop`).
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut sigterm = match signal(SignalKind::terminate()) {
+            Ok(sigterm) => sigterm,
+            Err(err) => {
+                eprintln!("radiod: cannot install SIGTERM handler: {err}");
+                std::future::pending().await
+            }
+        };
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => {
+                if let Err(err) = result {
+                    eprintln!("radiod: cannot listen for ctrl-c: {err}");
+                    std::future::pending().await
+                }
+            }
+            _ = sigterm.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    if let Err(err) = tokio::signal::ctrl_c().await {
+        eprintln!("radiod: cannot listen for ctrl-c: {err}");
+        std::future::pending().await
+    }
 }
