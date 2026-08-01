@@ -2,11 +2,11 @@
 
 - **Date:** 2026-08-01
 - **Status:** rewritten after review — Stefan chose the two-target option
-- **Goal:** build `radiod` .debs for **amd64** and **arm64** (plus the
-  `Architecture: all` website .deb) both **locally on the Debian 13
-  build box** and **in CI on public GitHub runners**. A GitHub workflow
-  — the last phase — builds the .debs and attaches them to a GitHub
-  Release; **only releases produce .deb builds**.
+- **Goal:** build `radiod` .debs for **amd64**, **arm64** and **armhf**
+  (Debian's ARMv7 port) plus the `Architecture: all` website .deb, both
+  **locally on the Debian 13 build box** and **in CI on public GitHub
+  runners**. A GitHub workflow builds the .debs and attaches them to a
+  GitHub Release; **only releases produce .deb builds**.
 
 ## Decision record: why two targets
 
@@ -19,13 +19,24 @@ hardware verification — and trixie is the last Debian/Raspbian
 generation supporting ARMv6 at all. Decision: retire the Pi Zero W in
 favor of an arm64-capable board and drop the ARMv6 lane entirely.
 
+**Update (during implementation): the Zero is retired.** The radio will
+run on either a new arm64 Pi or an ARMv7 Banana Pi (BPI-M2 Zero,
+Allwinner H3). That adds **armhf** — Debian's ARMv7 hard-float port, a
+first-class Debian architecture — as a third target, and deletes the
+legacy `service/build-pi.sh` ARMv6 path in this same stack.
+
 With Debian-native targets only, everything is first-class distro
 machinery: **no Docker, no emulation, no sysroots, no third-party
 toolchains** — locally or in CI.
 
-Until the replacement board is in service, the existing hardware-proven
-`service/build-pi.sh` stays untouched as the way to ship to the current
-Pi Zero W; retiring it is a small follow-up once the hardware swaps.
+**armhf naming decision:** the .deb keeps the standard `_armhf` name
+and `Architecture: armhf` field (dpkg requires the field anyway; a
+deviating filename would just disagree with its own metadata). The
+name-collision risk — an ARMv7 armhf .deb silently installing on
+ARMv6 Raspbian hardware, where dpkg's architecture check cannot tell
+them apart — is handled by a **preinst guard**: the package refuses to
+install when `uname -m` reports pre-ARMv7 hardware (`armv6*` and
+older). amd64/arm64 installs pass through the same check untouched.
 
 ## Design
 
@@ -122,18 +133,43 @@ Verify with a prerelease (e.g. `v0.4.0-rc1` marked pre-release):
 release gets all four assets; install the amd64 .deb on the box;
 `cargo test` green on the arm64 runner. Delete the prerelease after.
 
+### Phase 3 — armhf (ARMv7) target + ARMv6 retirement
+
+Added when the Zero was retired mid-implementation. The armhf lane is
+the arm64 lane with different names: `:armhf` multiarch packages +
+`crossbuild-essential-armhf` in `setup-build.sh`; an
+`armv7-unknown-linux-gnueabihf` case in `build-deb.sh` (linker
+`arm-linux-gnueabihf-gcc`, `arm-linux-gnueabihf-pkg-config`, bindgen
+`--target` + `-I/usr/include/arm-linux-gnueabihf`); a third workflow
+matrix leg that **cross-compiles on `ubuntu-latest`** (no 32-bit ARM
+GitHub runners exist — the arm64 runners' cores dropped 32-bit
+execution), skipping the duplicate host `cargo test`. Plus:
+
+- the preinst guard (see naming decision above), shipped for all
+  arches via the existing `deploy/debian` maintainer scripts;
+- delete `service/build-pi.sh` and the ARMv6 sections/mentions in
+  service/README.md, README.md, CLAUDE.md and notes/plan.md;
+- watch for the ffmpeg-sys host-probe `stubs-soft.h` gotcha recurring
+  on 32-bit cross builds (known one-line fix if it does).
+
+Verify: armhf .deb builds on the box; `readelf -A` shows an ARMv7
+binary; the preinst guard rejects a simulated pre-ARMv7 machine and
+passes on amd64 (install the amd64 .deb again); hardware verification
+happens when the Banana Pi arrives.
+
 ## Acceptance criteria
 
-- `build-deb.sh amd64` and `build-deb.sh arm64` both produce
-  installable .debs on the build box, no Docker/emulation involved.
+- `build-deb.sh` produces installable .debs for amd64, arm64 and armhf
+  on the build box, no Docker/emulation involved.
 - Publishing a GitHub Release is the only trigger that produces .debs,
   entirely on public GitHub-hosted runners, and attaches
-  amd64 + arm64 + website .debs plus `SHA256SUMS` to that release.
+  amd64 + arm64 + armhf + website .debs plus `SHA256SUMS` to it.
 - The same `build-deb.sh` runs unmodified in both places.
 - `cargo test` passes natively on arm64 in CI.
-- service/README.md and CLAUDE.md reflect the new build story
-  (build-pi.sh documented as the legacy Pi Zero W path until the
-  hardware is replaced).
+- The armhf .deb refuses to install on pre-ARMv7 hardware (preinst
+  guard) and installs cleanly elsewhere.
+- `build-pi.sh` and all ARMv6 documentation are gone; service/README.md,
+  README.md, CLAUDE.md and notes/plan.md describe only the new story.
 
 ## Key references (from the research round)
 
