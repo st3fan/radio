@@ -32,34 +32,46 @@ Target is a Pi Zero W 1.0: single-core 32-bit **ARMv6** (Rust target
 `arm-unknown-linux-gnueabihf`, not armv7), 512 MB RAM. Prefer small, blocking,
 few-dependency solutions over heavy frameworks and async runtimes.
 
-## How we work: plan-based development
+## How we work: plan-based development in PR stacks
 
 Every time we work on a step of this project, we first write an
 implementation plan as `plans/YYYYMMDD-NN-slug.md` (e.g.
 `plans/20260729-01-daemon-skeleton.md`, where `NN` is a sequence number for
-that day). The plan describes what will be built and how.
+that day). The plan describes what will be built and how; complicated work
+is split into **phases**, each phase its own pull request.
 
-- If the work is complicated, the plan lists **phases**, where each phase is
-  its own pull request.
-- Plans are written before implementation starts, so they can be reviewed.
+**A plan and its implementation live together in one stack** (managed with
+the `gh-stack` skill). The plan document is the bottom PR of a fresh stack;
+the implementation phases are PRs stacked on top, one branch per phase, each
+based on the one below it:
+
+- Open the stack with the plan PR alone, and **wait for Stefan to approve
+  the plan** (review feedback on the open PR — not a merge) before stacking
+  implementation PRs onto it.
+- The plan PR **stays open for the whole task** — that is the point of
+  stacking it: if the work reveals mid-way that the plan needs adjusting, or
+  decisions worth recording, commit them to the plan document on its
+  still-open branch (then `gh stack rebase --upstack`), so the plan that
+  eventually merges matches what was actually built.
+- At the end Stefan reviews and merges the whole stack himself.
+
+This convention was proven in
+[openairplay2](https://github.com/st3fan/openairplay2) and replaces the
+earlier integration-branch workflow (used through milestone 5); already-
+merged history keeps its shape.
 
 ## Pull requests
 
 - All work lands via pull requests — no direct commits to `main`.
-- Stefan reads and approves PRs before they merge.
-- Always check PR status with `gh` (e.g. `gh pr view`, `gh pr list`) instead
-  of assuming a PR is still open — it may have been merged or closed in the
-  meantime. Never push follow-up commits to a branch whose PR is no longer
-  open; put them on a new branch with a new PR.
-- Single-PR work: branch from `main`, open a PR against `main`.
-- Multi-PR work (a plan with phases): create an **integration branch** from
-  `main` (e.g. `integration/daemon-playback`), open each phase's PR against
-  that branch, and when the whole plan is done, merge the integration branch
-  to `main` with one final PR.
-- Merge strategy: **squash-merge** each phase PR into the integration branch
-  (one commit per phase), then merge the integration branch to `main` with a
-  **merge commit**. This keeps the phase commits visible in `git log` while
-  `git log --first-parent main` shows one entry per milestone.
+- Stefan reads, approves, and **merges** PRs and stacks himself.
+- Always check PR status with `gh` (e.g. `gh pr view`, `gh stack view
+  --json`) instead of assuming a PR is still open — it may have been merged
+  or closed in the meantime. Never push follow-up commits to a branch whose
+  PR is no longer open; put them on a new branch with a new PR.
+- Small standalone work that needs no plan: branch from `main`, one PR
+  against `main`.
+- After a stack (or PR) merges, `gh stack sync --prune` brings `main` up to
+  date and cleans up the merged branches.
 
 ## Coding notes
 
