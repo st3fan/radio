@@ -1,7 +1,8 @@
 # Radio
 
-An internet radio for a Raspberry Pi Zero W connected to studio speakers:
-pick a SomaFM channel in the browser, music comes out of the speakers.
+An internet radio for a small ARM board (an arm64 Raspberry Pi or an
+ARMv7 Banana Pi) connected to studio speakers: pick a SomaFM channel in
+the browser, music comes out of the speakers.
 
 ```
 browser (LAN) ──▶ lighttpd + php-fpm (website, port 80)
@@ -24,23 +25,34 @@ Two components, shipped as two Debian packages:
 - **`radio-website`** (`website/`) — plain PHP site: the SomaFM channel
   list with artwork, playback controls, now-playing display.
 
-## Building the packages
+## Getting the packages
 
-In any Debian environment — a Debian machine or a Docker container works
-equally well — with SSH access to the Pi for the sysroot sync (see
-`service/README.md` for prerequisites and the cross-compilation gotchas):
+**Releases**: publishing a GitHub Release (from a `v*` tag) builds and
+attaches `radiod_<version>_{amd64,arm64,armhf}.deb`,
+`radio-website_<version>_all.deb` and a `SHA256SUMS` file — built on
+public runners inside `debian:trixie` containers by the same scripts
+used locally.
+
+**Local builds**, on any Debian 13 environment (see `service/README.md`
+for details):
 
 ```
-service/build-pi.sh sync <pi-host>   # once, and after Pi upgrades
-service/build-pi.sh deb              # → radiod_<version>_armhf.deb
+service/setup-build.sh cross         # once; arm64 + armhf multiarch toolchains
+service/build-deb.sh amd64           # → radiod_<version>_amd64.deb
+service/build-deb.sh arm64           # → radiod_<version>_arm64.deb
+service/build-deb.sh armhf           # → radiod_<version>_armhf.deb (ARMv7)
 deploy/build-website-deb.sh          # → radio-website_<version>_all.deb
 ```
 
-## Installing on the Pi
+## Installing on the radio device
+
+With the .deb for the board's architecture (`arm64` for a 64-bit Pi,
+`armhf` for the ARMv7 Banana Pi — the armhf package refuses to install
+on ARMv6 relics like the Pi Zero W):
 
 ```
-scp radiod_*_armhf.deb radio-website_*_all.deb <pi-host>:
-ssh <pi-host> apt install ./radiod_*_armhf.deb ./radio-website_*_all.deb
+scp radiod_*.deb radio-website_*_all.deb <host>:
+ssh <host> apt install ./radiod_*.deb ./radio-website_*_all.deb
 ```
 
 apt pulls all runtime dependencies (FFmpeg/ALSA libraries, lighttpd,
@@ -52,4 +64,4 @@ with `aplay -l`) and `systemctl restart radiod`. The site is on port 80.
 Plan-based, PR-based — see `CLAUDE.md` for the ways of working and
 `notes/plan.md` for the design. Daemon development happens on macOS
 (`cargo test` in `service/`), real-audio testing on a Debian machine,
-and the Pi Zero only ever runs release packages.
+and the radio board only ever runs release packages.

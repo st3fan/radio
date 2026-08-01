@@ -73,41 +73,33 @@ Volume requests take 0–100 as a **percentage of `max_volume`**: 100 means
 of 100 yields an effective device volume of 30. Responses and `/status`
 always show the effective value.
 
-## Cross-compiling for the Pi Zero W
+## Building .deb packages (amd64, arm64, armhf)
 
-The Pi Zero W 1 is ARMv6 (`arm-unknown-linux-gnueabihf`) — stock Debian
-armhf binaries are ARMv7 and will not run on it, and building on the Zero
-itself is a non-starter. Builds happen on the Debian PC against a sysroot
-copied from the Pi, so the linked libav*/libasound sonames match the Pi's
-exactly:
+On Debian 13 — the build box or a `debian:trixie` CI container:
 
 ```
-# once: rustup target add arm-unknown-linux-gnueabihf
-#       sudo apt install gcc-arm-linux-gnueabihf clang rsync
-#       (on the Pi) sudo apt install libavformat-dev libavcodec-dev \
-#           libavutil-dev libswresample-dev libasound2-dev libgcc-14-dev
+./setup-build.sh cross          # once; "cross" adds the arm64 + armhf
+                                # multiarch toolchains (omit for native-only)
+cargo install cargo-deb         # once, per user
 
-./build-pi.sh sync <pi-host>    # copy the sysroot (repeat after Pi upgrades)
-./build-pi.sh build             # target/arm-unknown-linux-gnueabihf/release/radiod
+./build-deb.sh amd64            # native -> target/debian/
+./build-deb.sh arm64            # multiarch cross on the amd64 box; native in CI
+./build-deb.sh armhf            # multiarch cross (ARMv7 — the Banana Pi)
 ```
 
-Gotchas the script handles (each discovered the hard way against a real
-Pi Zero running Raspbian trixie):
+The cross builds are plain Debian multiarch: the foreign-arch dev
+packages co-install next to the native ones (`Multi-Arch: same`), the
+`pkgconf:<arch>` wrappers serve the right `.pc` paths, and
+`build-deb.sh` exports the per-target linker/pkg-config/bindgen
+variables. No Docker, no emulation, no sysroot directory. The GitHub
+release workflow (see `.github/workflows/`) runs the same script.
 
-- Debian's cross gcc emits ARMv7 code by default, so C compiled by build
-  scripts gets `-march=armv6 -mfpu=vfp` forced to match the Rust target.
-- The cross gcc's *companion* crt/libgcc objects are ARMv7/Thumb-2 and
-  SIGILL on the Zero before `main()`; linking uses the Pi's own (`-B`
-  prefixes into the sysroot, hence `libgcc-14-dev` on the Pi, minus the
-  Pi's LTO plugin which the host linker cannot load).
-- Raspbian's FFmpeg carries vendor pixel formats (SAND/RPI4) unknown to
-  ffmpeg-next's exhaustive matches; `sync` hides them from bindgen (they
-  sit at the enum tail, so no other value shifts — and an audio daemon
-  never touches video pixel formats).
-- ffmpeg-sys' host-compiled version probe needs an empty `stubs-soft.h`
-  shim, trixie's merged-/usr needs a `lib -> usr/lib` symlink plus the
-  loader compat path, and the kernel UAPI headers live under
-  `/usr/lib/linux/uapi` on trixie.
+Note on armhf: this is **Debian's ARMv7 port** — it does not run on the
+ARMv6 Raspbian world (Pi Zero W, Pi 1), and since dpkg cannot tell
+those two "armhf"s apart, the package carries a preinst guard that
+refuses pre-ARMv7 hardware. The old ARMv6 build path was removed when
+the Pi Zero W was retired (history: `plans/20260801-12-*.md` and
+`git log -- service/build-pi.sh`).
 
 ## Checks
 
