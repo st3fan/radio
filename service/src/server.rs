@@ -12,7 +12,6 @@ use tokio::net::TcpListener;
 use crate::player::{Command, Player};
 use crate::pls::PlsError;
 use crate::status::{State, Status};
-use crate::volume;
 
 /// Maximum accepted request body; our biggest body is one playlist URL.
 const MAX_BODY_BYTES: usize = 64 * 1024;
@@ -105,15 +104,12 @@ async fn route(method: &Method, url: &str, body: &str, app: &App) -> (u16, Strin
                 Ok(request) => request,
                 Err(err) => return (400, error_body(&format!("invalid request body: {err}"))),
             };
-            // The request is a percentage of max_volume: 100 means "as loud
-            // as the cap allows". The stored/returned value is the effective
-            // device volume.
             if request.volume > 100 {
                 return (400, error_body("volume must be between 0 and 100"));
             }
             {
                 let mut status = app.status.lock().expect("status lock poisoned");
-                status.volume = volume::effective_volume(request.volume, status.max_volume);
+                status.volume = request.volume;
             }
             (200, status_body(app))
         }
@@ -258,8 +254,8 @@ mod tests {
         assert_eq!(code, 200);
         let value: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(value["state"], "stopped");
-        assert_eq!(value["volume"], 25);
-        assert_eq!(value["max_volume"], 50);
+        assert_eq!(value["volume"], 50);
+        assert_eq!(value["mixer"], "disabled");
     }
 
     #[tokio::test]
@@ -458,17 +454,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn volume_route_scales_percentage_of_max_volume() {
+    async fn volume_route_sets_the_volume() {
         let app = test_app(ok_resolver());
-        // Default max_volume is 50; requests are percentages of it.
-        for (requested, effective) in [(0u8, 0u64), (30, 15), (50, 25), (80, 40), (100, 50)] {
+        // Volume is a plain 0-100 value; the loudness ceiling lives in the
+        // hardware mixer, not in this mapping.
+        for requested in [0u8, 30, 50, 80, 100] {
             let body = format!(r#"{{"volume": {requested}}}"#);
             let (code, response) = route(&Method::POST, "/volume", &body, &app).await;
             assert_eq!(code, 200, "requested {requested}");
             let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-            assert_eq!(value["volume"], effective, "requested {requested}");
+            assert_eq!(value["volume"], requested, "requested {requested}");
         }
-        assert_eq!(app.status.lock().unwrap().volume, 50);
+        assert_eq!(app.status.lock().unwrap().volume, 100);
     }
 
     #[tokio::test]
@@ -489,14 +486,14 @@ mod tests {
             assert!(value["error"].is_string());
         }
         // Failed requests must not have changed the volume.
-        assert_eq!(app.status.lock().unwrap().volume, 25);
+        assert_eq!(app.status.lock().unwrap().volume, 50);
     }
 
     #[tokio::test]
     async fn mute_and_unmute_leave_volume_untouched() {
         let app = test_app(ok_resolver());
         route(&Method::POST, "/volume", r#"{"volume": 40}"#, &app).await;
-        let effective = 20; // 40% of the default max_volume 50
+        let effective = 40; // volume is plain now — no cap scaling
 
         let (code, response) = route(&Method::POST, "/mute", "", &app).await;
         assert_eq!(code, 200);
@@ -539,13 +536,13 @@ mod tests {
             samples[start + SKIP..].to_vec()
         };
 
-        // Drop the volume to 10% of the cap (an effective device volume of
-        // 5): the tail must scale down, but not to silence.
+        // Drop the volume to 10: the tail must scale down to at most 10 %
+        // of full scale, but not to silence.
         let mark = sink.samples.lock().unwrap().len();
         route(&Method::POST, "/volume", r#"{"volume": 10}"#, &app).await;
-        assert_eq!(app.status.lock().unwrap().volume, 5);
+        assert_eq!(app.status.lock().unwrap().volume, 10);
         let tail = tail_after(mark);
-        let bound = (0.05 * f32::from(i16::MAX)) as i32 + 1;
+        let bound = (0.10 * f32::from(i16::MAX)) as i32 + 1;
         let peak = tail.iter().map(|s| i32::from(*s).abs()).max().unwrap();
         assert!(peak <= bound, "peak {peak} exceeds bound {bound}");
         assert!(peak > 0, "unexpected silence");

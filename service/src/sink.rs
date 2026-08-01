@@ -155,6 +155,12 @@ mod alsa_sink {
                 hwp.set_format(Format::s16()).map_err(to_io)?;
                 hwp.set_rate(spec.rate, ValueOr::Nearest).map_err(to_io)?;
                 hwp.set_channels(u32::from(spec.channels)).map_err(to_io)?;
+                // Bound the device buffer: left unconstrained, some devices
+                // choose buffers seconds deep, and every buffered sample
+                // keeps playing after /stop. Half a second is ample slack
+                // for a single-purpose radio.
+                hwp.set_buffer_time_near(500_000, ValueOr::Nearest)
+                    .map_err(to_io)?;
                 pcm.hw_params(&hwp).map_err(to_io)?;
             }
             self.channels = usize::from(spec.channels);
@@ -181,8 +187,11 @@ mod alsa_sink {
         }
 
         fn close(&mut self) {
+            // drop(), not drain(): stop on a live radio means now, not
+            // "after the buffer finishes". Anything still queued is
+            // discarded.
             if let Some(pcm) = self.pcm.take() {
-                let _ = pcm.drain();
+                let _ = pcm.drop();
             }
         }
     }

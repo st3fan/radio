@@ -5,10 +5,14 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel}
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::mixer::MixerControl;
 use crate::sink::AudioSink;
 use crate::source::SourceFactory;
 use crate::status::{State, Status};
 use crate::volume;
+
+/// The optional hardware-ceiling owner; None for the dev sinks.
+type Mixer = Option<Box<dyn MixerControl>>;
 
 const CHUNK_SAMPLES: usize = 2048;
 
@@ -73,12 +77,15 @@ impl Player {
     }
 }
 
+/// Test convenience: no mixer, default tuning. Production goes through
+/// `spawn_with_tuning` so the mixer is threaded in.
+#[cfg(test)]
 pub fn spawn(
     status: Arc<Mutex<Status>>,
     sink: Box<dyn AudioSink>,
     source_factory: SourceFactory,
 ) -> Player {
-    spawn_with_tuning(status, sink, source_factory, Tuning::default()).0
+    spawn_with_tuning(status, sink, None, source_factory, Tuning::default()).0
 }
 
 /// Also returns the thread's join handle: the thread exits (closing the
@@ -86,11 +93,13 @@ pub fn spawn(
 pub fn spawn_with_tuning(
     status: Arc<Mutex<Status>>,
     sink: Box<dyn AudioSink>,
+    mixer: Mixer,
     source_factory: SourceFactory,
     tuning: Tuning,
 ) -> (Player, std::thread::JoinHandle<()>) {
     let (tx, rx) = channel();
-    let handle = std::thread::spawn(move || run(&rx, &status, sink, &source_factory, tuning));
+    let handle =
+        std::thread::spawn(move || run(&rx, &status, sink, mixer, &source_factory, tuning));
     (Player { tx }, handle)
 }
 
@@ -98,6 +107,7 @@ fn run(
     rx: &Receiver<Command>,
     status: &Mutex<Status>,
     mut sink: Box<dyn AudioSink>,
+    mut mixer: Mixer,
     source_factory: &SourceFactory,
     tuning: Tuning,
 ) {
@@ -105,8 +115,15 @@ fn run(
     loop {
         session = match session {
             Session::Playing(station) => {
-                match play_with_retries(rx, status, sink.as_mut(), source_factory, &station, tuning)
-                {
+                match play_with_retries(
+                    rx,
+                    status,
+                    sink.as_mut(),
+                    &mut mixer,
+                    source_factory,
+                    &station,
+                    tuning,
+                ) {
                     RetryEnd::Command(command) => {
                         transition(command, Session::Playing(station), status)
                     }
@@ -139,6 +156,7 @@ fn play_with_retries(
     rx: &Receiver<Command>,
     status: &Mutex<Status>,
     sink: &mut dyn AudioSink,
+    mixer: &mut Mixer,
     source_factory: &SourceFactory,
     station: &Station,
     tuning: Tuning,
@@ -146,7 +164,7 @@ fn play_with_retries(
     let mut backoff = tuning.initial_backoff;
     loop {
         let started = Instant::now();
-        match play(rx, status, sink, source_factory, station) {
+        match play(rx, status, sink, mixer, source_factory, station) {
             Outcome::Interrupted(command) => return RetryEnd::Command(command),
             Outcome::Disconnected => return RetryEnd::Disconnected,
             Outcome::SinkFailed => return RetryEnd::Fatal,
@@ -220,9 +238,30 @@ fn play(
     rx: &Receiver<Command>,
     status: &Mutex<Status>,
     sink: &mut dyn AudioSink,
+    mixer: &mut Mixer,
     source_factory: &SourceFactory,
     station: &Station,
 ) -> Outcome {
+    // The hardware ceiling comes first: every session start (including
+    // each reconnect attempt, which covers the USB-DAC-reappeared case)
+    // re-asserts it, and a session that cannot get its ceiling does not
+    // get audio. Fatal like a sink failure — the operator must intervene.
+    if let Some(mixer) = mixer.as_mut() {
+        match mixer.assert_ceiling() {
+            Ok(()) => {
+                let mut status = status.lock().expect("status lock poisoned");
+                if status.mixer != "ok" {
+                    status.mixer = "ok".to_string();
+                }
+            }
+            Err(err) => {
+                eprintln!("radiod: mixer: {err}");
+                status.lock().expect("status lock poisoned").mixer = format!("error: {err}");
+                return Outcome::SinkFailed;
+            }
+        }
+    }
+
     // Optimistic: `playing` means "trying to play". Set before opening so
     // the status holds steady through reconnect attempts. Metadata resets
     // per session — a new station (or a reconnect) repopulates it.
@@ -563,6 +602,7 @@ mod tests {
         let (player, _) = spawn_with_tuning(
             status.clone(),
             Box::new(sink.clone()),
+            None,
             factory,
             test_tuning(),
         );
@@ -598,6 +638,7 @@ mod tests {
         let (player, _) = spawn_with_tuning(
             status.clone(),
             Box::new(sink.clone()),
+            None,
             factory,
             test_tuning(),
         );
@@ -628,6 +669,7 @@ mod tests {
         let (player, _) = spawn_with_tuning(
             status.clone(),
             Box::new(sink.clone()),
+            None,
             factory,
             test_tuning(),
         );
@@ -659,8 +701,13 @@ mod tests {
             initial_backoff: Duration::from_secs(30),
             ..test_tuning()
         };
-        let (player, _) =
-            spawn_with_tuning(status.clone(), Box::new(sink.clone()), factory, tuning);
+        let (player, _) = spawn_with_tuning(
+            status.clone(),
+            Box::new(sink.clone()),
+            None,
+            factory,
+            tuning,
+        );
 
         player.send(Command::Play {
             playlist_url: "https://example.com/bad.pls".to_string(),
@@ -690,8 +737,13 @@ mod tests {
             max_backoff: Duration::from_millis(80),
             stable_after: Duration::from_secs(60),
         };
-        let (player, _) =
-            spawn_with_tuning(status.clone(), Box::new(sink.clone()), factory, tuning);
+        let (player, _) = spawn_with_tuning(
+            status.clone(),
+            Box::new(sink.clone()),
+            None,
+            factory,
+            tuning,
+        );
 
         player.send(Command::Play {
             playlist_url: "https://example.com/bad.pls".to_string(),
@@ -732,8 +784,13 @@ mod tests {
             max_backoff: Duration::from_millis(400),
             stable_after: Duration::from_millis(30),
         };
-        let (player, _) =
-            spawn_with_tuning(status.clone(), Box::new(sink.clone()), factory, tuning);
+        let (player, _) = spawn_with_tuning(
+            status.clone(),
+            Box::new(sink.clone()),
+            None,
+            factory,
+            tuning,
+        );
 
         player.send(Command::Play {
             playlist_url: "https://example.com/test.pls".to_string(),
@@ -855,12 +912,83 @@ mod tests {
     }
 
     #[test]
+    fn mixer_is_asserted_at_every_session_start() {
+        use crate::mixer::testing::TestMixer;
+
+        let status = playing_status("");
+        let sink = TestSink::default();
+        let mixer = TestMixer::default();
+        let (player, _) = spawn_with_tuning(
+            status.clone(),
+            Box::new(sink.clone()),
+            Some(Box::new(mixer.clone())),
+            sine_factory(),
+            Tuning::default(),
+        );
+
+        start_playing(&player, &status);
+        assert_eq!(*mixer.asserts.lock().unwrap(), 1);
+        assert_eq!(status.lock().unwrap().mixer, "ok");
+
+        // Pause tears the session down; resume starts a new one — the
+        // ceiling must be re-asserted before audio flows again.
+        player.send(Command::Pause);
+        wait_for(|| status.lock().unwrap().state == State::Paused);
+        player.send(Command::Resume);
+        wait_for(|| status.lock().unwrap().state == State::Playing);
+        assert_eq!(*mixer.asserts.lock().unwrap(), 2);
+
+        player.send(Command::Stop);
+        wait_for(|| status.lock().unwrap().state == State::Stopped);
+    }
+
+    #[test]
+    fn mixer_failure_refuses_to_start_audio() {
+        use crate::mixer::testing::TestMixer;
+
+        let status = playing_status("");
+        let sink = TestSink::default();
+        let mixer = TestMixer::default();
+        *mixer.fail_with.lock().unwrap() = Some("ceiling gone".to_string());
+        let (player, _) = spawn_with_tuning(
+            status.clone(),
+            Box::new(sink.clone()),
+            Some(Box::new(mixer.clone())),
+            sine_factory(),
+            Tuning::default(),
+        );
+
+        player.send(Command::Play {
+            playlist_url: "https://example.com/test.pls".to_string(),
+            stream_url: "https://example.com/stream".to_string(),
+        });
+        wait_for(|| status.lock().unwrap().mixer.starts_with("error:"));
+        wait_for(|| status.lock().unwrap().state == State::Stopped);
+        {
+            let status = status.lock().unwrap();
+            assert_eq!(status.mixer, "error: ceiling gone");
+        }
+        // No ceiling, no audio: the sink was never even opened.
+        assert!(sink.opened_with.lock().unwrap().is_none());
+        assert!(sink.samples.lock().unwrap().is_empty());
+
+        // Clearing the failure lets the next /play recover — and flips the
+        // status back to ok.
+        *mixer.fail_with.lock().unwrap() = None;
+        start_playing(&player, &status);
+        assert_eq!(status.lock().unwrap().mixer, "ok");
+        player.send(Command::Stop);
+        wait_for(|| status.lock().unwrap().state == State::Stopped);
+    }
+
+    #[test]
     fn dropping_all_handles_stops_the_thread_and_closes_the_sink() {
         let status = playing_status("");
         let sink = TestSink::default();
         let (player, handle) = spawn_with_tuning(
             status.clone(),
             Box::new(sink.clone()),
+            None,
             sine_factory(),
             Tuning::default(),
         );
@@ -874,10 +1002,11 @@ mod tests {
     }
 
     #[test]
-    fn samples_written_respect_max_volume() {
-        // Full-scale sine through the pipeline with volume at the cap: no
-        // sample may exceed max_volume percent of full scale.
-        let status = playing_status("max_volume = 50\ninitial_volume = 100");
+    fn samples_written_respect_the_volume() {
+        // Full-scale sine through the pipeline at volume 50: no sample may
+        // exceed half of full scale. (The hardware ceiling lives in the
+        // mixer now; this guards the software half — gain never amplifies.)
+        let status = playing_status("initial_volume = 50");
         assert_eq!(status.lock().unwrap().volume, 50);
         let sink = TestSink::default();
         let player = spawn(status.clone(), Box::new(sink.clone()), sine_factory());

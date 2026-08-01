@@ -19,7 +19,9 @@ pub struct Status {
     pub icy_name: Option<String>,
     pub volume: u8,
     pub muted: bool,
-    pub max_volume: u8,
+    /// Mixer ceiling health: "ok", "disabled" (null/wav sinks), or
+    /// "error: ...". The website surfaces anything that isn't "ok"-ish.
+    pub mixer: String,
 }
 
 impl Status {
@@ -30,10 +32,9 @@ impl Status {
             stream_url: None,
             icy_title: None,
             icy_name: None,
-            // Already effective: config stores the scaled device volume.
             volume: config.initial_volume,
             muted: false,
-            max_volume: config.max_volume,
+            mixer: "disabled".to_string(),
         }
     }
 }
@@ -55,9 +56,9 @@ mod tests {
                 "stream_url": null,
                 "icy_title": null,
                 "icy_name": null,
-                "volume": 25,
+                "volume": 50,
                 "muted": false,
-                "max_volume": 50
+                "mixer": "disabled"
             })
         );
     }
@@ -79,11 +80,10 @@ mod tests {
     }
 
     #[test]
-    fn initial_volume_respects_max_volume() {
-        let config = Config::from_toml("max_volume = 30\ninitial_volume = 80").unwrap();
+    fn initial_volume_is_taken_verbatim() {
+        let config = Config::from_toml("initial_volume = 80").unwrap();
         let status = Status::initial(&config);
-        assert_eq!(status.volume, 24); // 80% of max_volume 30
-        assert_eq!(status.max_volume, 30);
+        assert_eq!(status.volume, 80);
     }
 
     #[test]

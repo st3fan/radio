@@ -1,20 +1,12 @@
-//! The safety-critical volume module.
+//! The software half of the volume story.
 //!
-//! `effective_volume` is the only way a requested volume becomes an effective
-//! volume, and `gain` is the only way an effective volume becomes a sample
-//! multiplier. All gain applied to audio must flow through these functions.
+//! Since milestone 10 the speaker-protecting ceiling lives in the ALSA
+//! mixer (see `mixer`); the digital path runs at full scale. This module
+//! is the belt to that braces: `gain` is the only way a volume becomes a
+//! sample multiplier, and `apply_gain` clamps so software can attenuate
+//! but never amplify.
 
-/// Maps a requested volume (0-100, a percentage of `max_volume`) onto the
-/// device scale: 100 means `max_volume`, 50 means half of it. The result can
-/// never exceed `max_volume` — the scale itself makes overshoot impossible.
-pub fn effective_volume(requested: u8, max_volume: u8) -> u8 {
-    // Callers validate requested <= 100; cap defensively anyway.
-    let requested = u32::from(requested.min(100));
-    let scaled = (requested * u32::from(max_volume) + 50) / 100;
-    scaled as u8
-}
-
-/// Converts an effective volume into a sample multiplier. Muted always wins.
+/// Converts a volume (0-100) into a sample multiplier. Muted always wins.
 pub fn gain(volume: u8, muted: bool) -> f32 {
     if muted {
         0.0
@@ -39,58 +31,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn effective_volume_is_a_percentage_of_max() {
-        assert_eq!(effective_volume(100, 50), 50);
-        assert_eq!(effective_volume(50, 50), 25);
-        assert_eq!(effective_volume(80, 50), 40);
-        assert_eq!(effective_volume(100, 30), 30);
-        assert_eq!(effective_volume(50, 30), 15);
-        assert_eq!(effective_volume(10, 50), 5);
-    }
-
-    #[test]
-    fn effective_volume_rounds_to_nearest() {
-        assert_eq!(effective_volume(25, 50), 13); // 12.5 rounds up
-        assert_eq!(effective_volume(24, 50), 12);
-        assert_eq!(effective_volume(1, 30), 0); // 0.3 rounds down
-        assert_eq!(effective_volume(5, 30), 2); // 1.5 rounds up
-    }
-
-    #[test]
-    fn effective_volume_zero() {
-        assert_eq!(effective_volume(0, 50), 0);
-    }
-
-    #[test]
-    fn effective_volume_with_zero_max_is_silent() {
-        assert_eq!(effective_volume(100, 0), 0);
-        assert_eq!(effective_volume(50, 0), 0);
-    }
-
-    #[test]
-    fn effective_volume_never_exceeds_max_for_any_input() {
-        for max_volume in [0u8, 1, 30, 50, 100] {
-            for requested in 0..=u8::MAX {
-                let effective = effective_volume(requested, max_volume);
-                assert!(
-                    effective <= max_volume,
-                    "requested {requested} max {max_volume} -> {effective}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn effective_volume_is_monotonic_in_request() {
-        let mut previous = effective_volume(0, 50);
-        for requested in 1..=100 {
-            let current = effective_volume(requested, 50);
-            assert!(current >= previous);
-            previous = current;
-        }
-    }
-
-    #[test]
     fn gain_is_linear_fraction() {
         assert_eq!(gain(0, false), 0.0);
         assert_eq!(gain(25, false), 0.25);
@@ -107,14 +47,10 @@ mod tests {
     #[test]
     fn gain_never_exceeds_one() {
         assert_eq!(gain(255, false), 1.0);
-    }
-
-    #[test]
-    fn gain_through_scaling_never_exceeds_max() {
-        for max_volume in [0u8, 30, 50, 100] {
-            for requested in 0..=u8::MAX {
-                let g = gain(effective_volume(requested, max_volume), false);
-                assert!(g <= f32::from(max_volume) / 100.0);
+        for volume in 0..=u8::MAX {
+            for muted in [false, true] {
+                let g = gain(volume, muted);
+                assert!((0.0..=1.0).contains(&g), "volume {volume} -> {g}");
             }
         }
     }
@@ -152,20 +88,29 @@ mod tests {
 
     #[test]
     fn apply_gain_never_amplifies() {
+        // The software invariant: no gain value — in range or out — may
+        // make any sample louder than it came in.
         let mut samples = [10000, -10000];
         apply_gain(&mut samples, 2.0); // out-of-range gain is clamped to 1.0
         assert_eq!(samples, [10000, -10000]);
+
+        for g in [f32::INFINITY, 1.5, 100.0] {
+            let mut samples = [i16::MAX, i16::MIN, 1234, -1234];
+            let before = samples;
+            apply_gain(&mut samples, g);
+            for (after, before) in samples.iter().zip(before.iter()) {
+                assert!(i32::from(*after).abs() <= i32::from(*before).abs());
+            }
+        }
     }
 
     #[test]
-    fn apply_gain_peak_respects_max_volume() {
-        // The milestone invariant: full-scale input through the clamp and
-        // gain never exceeds max_volume percent of full scale.
-        let max_volume = 50;
-        let g = gain(effective_volume(100, max_volume), false);
+    fn apply_gain_peak_respects_the_volume() {
+        // Full-scale input at volume 50 never exceeds half of full scale.
+        let g = gain(50, false);
         let mut samples = [i16::MAX; 64];
         apply_gain(&mut samples, g);
-        let bound = (f32::from(max_volume) / 100.0 * f32::from(i16::MAX)) as i32;
+        let bound = (0.5 * f32::from(i16::MAX)) as i32;
         for sample in samples {
             assert!(i32::from(sample).abs() <= bound);
         }
