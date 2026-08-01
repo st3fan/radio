@@ -2,9 +2,10 @@
 # triggered the run. Publishing a release (from a v* tag) is the ONLY event
 # that builds .debs — nothing runs on pushes or pull requests.
 #
-# Both radiod jobs build NATIVELY inside debian:trixie containers — amd64 on
-# ubuntu-latest, arm64 on the free public arm64 runners — so CI contains no
-# cross-compilation and the userland matches the build box exactly. The same
+# amd64 and arm64 build NATIVELY inside debian:trixie containers — amd64 on
+# ubuntu-latest, arm64 on the free public arm64 runners — and armhf (ARMv7)
+# cross-compiles via Debian multiarch on ubuntu-latest (no 32-bit ARM
+# runners exist; its tests are covered by the other legs). The same
 # service/build-deb.sh script is used here and on the box.
 
 name: Release
@@ -28,8 +29,13 @@ jobs:
         include:
           - arch: amd64
             runner: ubuntu-latest
+            setup: native
           - arch: arm64
             runner: ubuntu-24.04-arm
+            setup: native
+          - arch: armhf
+            runner: ubuntu-latest
+            setup: cross
     runs-on: ${{ matrix.runner }}
     container: debian:trixie
     steps:
@@ -43,7 +49,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install build dependencies
-        run: ./service/setup-build.sh
+        run: ./service/setup-build.sh ${{ matrix.setup }}
 
       # trixie's rustc is older than the crate's rust-version; use rustup.
       - name: Install Rust
@@ -57,7 +63,10 @@ jobs:
           workspaces: service
           key: ${{ matrix.arch }}
 
+      # The armhf leg cross-compiles on an amd64 host; running cargo test
+      # there would just repeat the amd64 leg's tests.
       - name: Test
+        if: matrix.setup == 'native'
         working-directory: service
         run: cargo test
 

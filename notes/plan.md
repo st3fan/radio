@@ -1,6 +1,7 @@
 # Radio — Project Plan
 
-An internet radio player for a Raspberry Pi Zero W (v1) connected to studio
+An internet radio player for a small ARM board (an arm64 Raspberry Pi or
+an ARMv7 Banana Pi; originally a Raspberry Pi Zero W) connected to studio
 speakers. Two components:
 
 1. **`radiod`** — a Rust daemon exposing an HTTP REST API on `127.0.0.1` that
@@ -19,10 +20,11 @@ speakers. Two components:
   function bounded by this maximum. User-facing volume values are a
   percentage of `max_volume` (100 = the cap), so exceeding it is impossible
   by construction.
-- **Hardware:** Pi Zero W 1.0 — single-core **ARMv6** (ARM1176, 32-bit),
-  512 MB RAM. Keep CPU and memory use low, keep dependencies few, no heavy
-  async runtimes if we can avoid them. Note: ARMv6, so the Rust target is
-  `arm-unknown-linux-gnueabihf`, *not* `armv7-...`.
+- **Hardware:** a small ARM board with 512 MB RAM — an arm64 Raspberry Pi
+  (`aarch64-unknown-linux-gnu`) or an ARMv7 Banana Pi BPI-M2 Zero
+  (`armv7-unknown-linux-gnueabihf`, Debian armhf). Keep CPU and memory
+  use low and dependencies few. (Originally a single-core ARMv6 Pi
+  Zero W, retired 2026-08 — see `plans/20260801-12-*.md`.)
 - Daemon API binds `127.0.0.1` only. The PHP site talks to it server-side,
   so nothing on the LAN can reach the daemon directly.
 
@@ -87,29 +89,29 @@ playlist URL (.pls)
   linked dynamically and declared as .deb Depends, so `apt install` pulls
   them.
 - Build time: FFmpeg dev headers + libclang (the sys crates run bindgen).
-  Building on the Pi Zero itself (one ARMv6 core, 512 MB) is a non-starter.
-  `service/build-pi.sh` cross-compiles for `arm-unknown-linux-gnueabihf`
-  against a **sysroot rsynced from the Pi itself** (exact soname/symbol
-  match), from any Debian environment — the Debian PC or a Docker container
-  (milestone 6 was built from a container on the Mac). The script encodes
-  several hardware-won gotchas (ARMv7 leakage from the cross toolchain,
-  Raspbian's vendor pixel formats, trixie sysroot quirks) — documented in
-  `service/README.md`.
+  `.deb`s for amd64, arm64 and armhf build on any Debian 13 environment
+  via `service/setup-build.sh` + `service/build-deb.sh` — native or
+  Debian-multiarch cross, no Docker/emulation/sysroots — and the GitHub
+  release workflow builds the same way on public runners (see
+  `plans/20260801-12-*.md`; the earlier ARMv6 sysroot flow died with the
+  Pi Zero W).
 - Environments (details in CLAUDE.md): primary development on macOS
   (everything except the ALSA sink builds and tests there); a Debian PC —
   attached to the actual speakers — for real-ALSA integration testing;
-  the Pi Zero only ever runs the release packages.
+  the radio board only ever runs the release packages.
 
 ### Packaging & deployment
 
 Both components ship as Debian packages; distribution is scp +
 `apt install ./<deb>` (see the top-level README for the commands):
 
-- **`radiod_<version>_armhf.deb`** (cargo-deb, via `build-pi.sh deb`):
-  `/usr/bin/radiod`, a systemd unit (dedicated `radio` system user in the
-  `audio` group, `Restart=always`, hardening) enabled and started on
-  install, `/etc/radio/config.toml` as a conffile so upgrades never
-  clobber local edits, and Depends pinned to the Pi's package names.
+- **`radiod_<version>_{amd64,arm64,armhf}.deb`** (cargo-deb, via
+  `service/build-deb.sh`): `/usr/bin/radiod`, a systemd unit (dedicated
+  `radio` system user in the `audio` group, `Restart=always`, hardening)
+  enabled and started on install, `/etc/radio/config.toml` as a conffile
+  so upgrades never clobber local edits, Depends pinned to trixie's
+  package names, and a preinst guard that keeps the armhf (ARMv7)
+  package off ARMv6 hardware.
 - **`radio-website_<version>_all.deb`** (dpkg-deb, via
   `deploy/build-website-deb.sh`): the site under `/var/www/radio`
   (`lib/` outside the docroot), a lighttpd conf-available snippet riding
@@ -117,8 +119,9 @@ Both components ship as Debian packages; distribution is scp +
   override (`pm = static`, `pm.max_children = 2` — 512 MB shared with the
   daemon) installed per PHP version at postinst time.
 
-Measured on the Pi Zero: ~7% CPU and ~30 MB RSS while playing; page loads
-in ~0.3 s; everything comes back by itself after a reboot.
+Measured on the (since retired) Pi Zero: ~7% CPU and ~30 MB RSS while
+playing; page loads in ~0.3 s; everything comes back by itself after a
+reboot.
 
 ### Configuration
 

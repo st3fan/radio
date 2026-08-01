@@ -1,7 +1,7 @@
 # Radio
 
-An internet radio player for a Raspberry Pi Zero W connected to studio
-speakers. Two components:
+An internet radio player for a small ARM board (an arm64 Raspberry Pi or
+an ARMv7 Banana Pi) connected to studio speakers. Two components:
 
 - `service/` — Rust daemon with an HTTP REST API on `127.0.0.1` that plays a
   stream (from a `.pls` playlist URL) to a preconfigured ALSA device.
@@ -28,11 +28,14 @@ hardware/ALSA mixer volume.
 
 ## Hardware constraints
 
-Target is a Pi Zero W 1.0: single-core 32-bit **ARMv6** (Rust target
-`arm-unknown-linux-gnueabihf`, not armv7), 512 MB RAM. Prefer small,
-few-dependency solutions over heavy frameworks. The one async runtime is
-the **current-thread** tokio runtime that owns the control plane (HTTP API,
-later AirPlay); the audio path stays blocking (see below).
+Target is a small ARM board with **512 MB RAM**: an arm64 Raspberry Pi
+(`aarch64-unknown-linux-gnu`) or an ARMv7 Banana Pi BPI-M2 Zero
+(`armv7-unknown-linux-gnueabihf`, Debian armhf). The retired ARMv6
+Pi Zero W is **not** supported — the armhf .deb refuses to install
+there. Prefer small, few-dependency solutions over heavy frameworks.
+The one async runtime is the **current-thread** tokio runtime that owns
+the control plane (HTTP API, later AirPlay); the audio path stays
+blocking (see below).
 
 ## How we work: plan-based development in PR stacks
 
@@ -106,15 +109,14 @@ merged history keeps its shape.
   SSH for real-audio testing with real ALSA — test here regularly when
   audio code changes, since macOS gives no signal on the ALSA/Linux side.
   Same Debian library ecosystem as Raspberry Pi OS.
-- **Any Debian 13 environment (packaging):** `.deb`s for amd64 and arm64
-  build via `service/setup-build.sh` + `service/build-deb.sh` (native, or
-  Debian-multiarch cross for arm64 on an amd64 host — no Docker, no
-  emulation) and `deploy/build-website-deb.sh`; the GitHub release
-  workflow runs the same scripts natively on public runners. The ARMv6
-  path (`service/build-pi.sh`, needs SSH to the Pi) is **legacy** until
-  the Pi Zero W is replaced by an arm64 board, then it gets retired.
-- **Pi Zero (target only):** runs the release packages. Never develop or
-  build on it — one ARMv6 core and 512 MB make that a non-starter.
+- **Any Debian 13 environment (packaging):** `.deb`s for amd64, arm64
+  and armhf build via `service/setup-build.sh` + `service/build-deb.sh`
+  (native, or Debian-multiarch cross on an amd64 host — no Docker, no
+  emulation, no sysroots) and `deploy/build-website-deb.sh`; the GitHub
+  release workflow runs the same scripts on public runners, and
+  publishing a release is the only thing that builds .debs.
+- **The radio board (target only):** runs the release packages. Never
+  develop or build on it — 512 MB makes that a non-starter.
 
 ### PHP (`website/`)
 

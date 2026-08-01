@@ -29,9 +29,9 @@ tokio = { version = "1", features = ["rt", "net", "signal", "sync", "time", "mac
 [target.'cfg(target_os = "linux")'.dependencies]
 alsa = "0.9"
 
-# .deb packaging for the Pi (cargo deb --target arm-unknown-linux-gnueabihf,
-# via ./build-pi.sh deb). Depends are pinned to Raspbian trixie's package
-# names; cargo-deb's automatic shlibdeps is unreliable for cross builds.
+# .deb packaging for amd64/arm64/armhf via ./build-deb.sh. Depends are
+# pinned to trixie's package names (identical across the three arches);
+# cargo-deb's automatic shlibdeps is unreliable for cross builds.
 [package.metadata.deb]
 name = "radiod"
 maintainer = "Stefan Arentz <stefan.arentz@gmail.com>"

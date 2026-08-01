@@ -3,9 +3,11 @@
 # (trixie) — the build box or a debian:trixie CI container. Idempotent.
 #
 # Usage:
-#   ./setup-build.sh           native build dependencies only (what CI uses)
-#   ./setup-build.sh cross     also the arm64 multiarch cross toolchain
-#                              (amd64 hosts only — the build box)
+#   ./setup-build.sh           native build dependencies only (what the
+#                              native CI jobs use)
+#   ./setup-build.sh cross     also the arm64 + armhf multiarch cross
+#                              toolchains (amd64 hosts: the build box and
+#                              the armhf CI job)
 #
 # Rust itself (rustup/cargo, cargo-deb) is deliberately not installed here:
 # it is per-user, not system, state. See service/README.md.
@@ -19,14 +21,19 @@ NATIVE_PACKAGES="build-essential pkg-config clang git ca-certificates curl
     libavformat-dev libavcodec-dev libavutil-dev libswresample-dev
     libasound2-dev"
 
-# The libav*/libasound dev packages are Multi-Arch: same, so the arm64
-# copies co-install next to the native ones. pkgconf:arm64 provides the
-# aarch64-linux-gnu-pkg-config wrapper whose personality points at the
-# arm64 multiarch paths.
+# The libav*/libasound dev packages are Multi-Arch: same, so the foreign
+# copies co-install next to the native ones. pkgconf:<arch> provides the
+# <triplet>-pkg-config wrapper whose personality points at that arch's
+# multiarch paths. armhf is Debian's ARMv7 port (the Banana Pi — NOT the
+# ARMv6 Raspbian world of the retired Pi Zero W).
 CROSS_PACKAGES="crossbuild-essential-arm64 binutils-aarch64-linux-gnu
     pkgconf:arm64
     libavformat-dev:arm64 libavcodec-dev:arm64 libavutil-dev:arm64
-    libswresample-dev:arm64 libasound2-dev:arm64"
+    libswresample-dev:arm64 libasound2-dev:arm64
+    crossbuild-essential-armhf binutils-arm-linux-gnueabihf
+    pkgconf:armhf
+    libavformat-dev:armhf libavcodec-dev:armhf libavutil-dev:armhf
+    libswresample-dev:armhf libasound2-dev:armhf"
 
 case "${1:-native}" in
 native)
@@ -40,8 +47,10 @@ cross)
         echo "setup-build.sh: cross setup is for amd64 hosts (this is $host)" >&2
         exit 2
     fi
-    dpkg --print-foreign-architectures | grep -qx arm64 || \
-        $SUDO dpkg --add-architecture arm64
+    for arch in arm64 armhf; do
+        dpkg --print-foreign-architectures | grep -qx "$arch" || \
+            $SUDO dpkg --add-architecture "$arch"
+    done
     $SUDO apt-get update
     # shellcheck disable=SC2086
     $SUDO apt-get install -y $NATIVE_PACKAGES $CROSS_PACKAGES
