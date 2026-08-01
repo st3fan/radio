@@ -47,6 +47,9 @@ The output level is hard-capped by the max_volume setting."""
 section = "sound"
 priority = "optional"
 depends = "libavformat61, libavcodec61, libavutil59, libswresample5, libasound2t64, libc6"
+# AirPlay needs Avahi for the _airplay._tcp advertisement; without it the
+# receiver degrades to radio-only instead of failing, hence Recommends.
+recommends = "avahi-daemon"
 assets = [
     ["target/release/radiod", "usr/bin/", "755"],
     ["../deploy/config.toml.example", "etc/radio/config.toml", "644"],

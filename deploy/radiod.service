@@ -9,6 +9,9 @@ ExecStart=/usr/bin/radiod --config /etc/radio/config.toml
 User=radio
 Group=radio
 SupplementaryGroups=audio
+# The AirPlay receiver identity lives here: state, not config — senders
+# remember the receiver by it, so it must survive upgrades.
+StateDirectory=radiod
 Restart=always
 RestartSec=5
 NoNewPrivileges=true

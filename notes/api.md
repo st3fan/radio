@@ -39,14 +39,18 @@ starts playing. Special cases:
   switches to the new station.
 
 Errors: 400 `invalid request body: …` (malformed JSON / missing field),
-502 `cannot fetch playlist: …` or `cannot parse playlist: …` (the fetch
-happens synchronously in the handler, so a bad playlist URL fails the
-request instead of failing silently later).
+409 `airplay session active` (an AirPlay sender owns the pipeline; stop
+is the local override), 502 `cannot fetch playlist: …` or `cannot parse
+playlist: …` (the fetch happens synchronously in the handler, so a bad
+playlist URL fails the request instead of failing silently later).
 
 ### `POST /stop`
 
 Stops playback and clears the station (`playlist_url`, `stream_url`, and
-the ICY fields become `null`). Always 200, including when already stopped.
+the ICY fields become `null`). Always 200, including when already
+stopped. During an AirPlay session this is the local override: playback
+stops here (the remembered station is forgotten), while the sender keeps
+its session until it notices or the user stops it there.
 
 ### `POST /pause`
 
@@ -58,6 +62,8 @@ left off).
 - While playing → 200, state becomes `paused`.
 - While already paused → no-op 200.
 - While stopped → **409** `nothing is playing`.
+- During an AirPlay session → **409** `airplay session active` (the
+  sender owns transport control).
 
 ### `POST /resume`
 
@@ -66,6 +72,7 @@ Reconnects to the remembered stream.
 - While paused → 200, state becomes `playing`.
 - While already playing → no-op 200.
 - While stopped → **409** `nothing is playing`.
+- During an AirPlay session → **409** `airplay session active`.
 
 ### `POST /volume`
 
@@ -103,7 +110,9 @@ distinct from `volume 0`: `muted` is a separate flag in the status.
   "icy_name": "DEF CON Radio: SomaFM's year-round channel for DEF CON [SomaFM]",
   "volume": 25,
   "muted": false,
-  "mixer": "ok"
+  "mixer": "ok",
+  "source": "radio",
+  "airplay": null
 }
 ```
 
@@ -117,6 +126,8 @@ distinct from `volume 0`: `muted` is a separate flag in the status.
 | `volume`       | integer         | The volume, 0–100. |
 | `muted`        | boolean         | Gain is forced to 0 when true; `volume` keeps its value. |
 | `mixer`        | string          | Health of the daemon-owned hardware ceiling: `"ok"`, `"disabled"` (dev sinks without a mixer), or `"error: ..."` — playback is refused while the ceiling cannot be asserted. |
+| `source`       | `"radio"` \| `"airplay"` | Which producer owns the pipeline. While `"airplay"`, the station fields are `null` and `/play`, `/pause`, `/resume` answer 409. |
+| `airplay`      | object \| null | `{"rate": 44100, "channels": 2}` while an AirPlay stream is active. |
 
 ## Examples
 
