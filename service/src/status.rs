@@ -19,9 +19,6 @@ pub struct Status {
     pub icy_name: Option<String>,
     pub volume: u8,
     pub muted: bool,
-    // Transitional: pinned to 100 since the mixer ceiling replaced the
-    // software cap; the field itself is removed in the next phase.
-    pub max_volume: u8,
     /// Mixer ceiling health: "ok", "disabled" (null/wav sinks), or
     /// "error: ...". The website surfaces anything that isn't "ok"-ish.
     pub mixer: String,
@@ -37,7 +34,6 @@ impl Status {
             icy_name: None,
             volume: config.initial_volume,
             muted: false,
-            max_volume: 100,
             mixer: "disabled".to_string(),
         }
     }
@@ -62,7 +58,6 @@ mod tests {
                 "icy_name": null,
                 "volume": 50,
                 "muted": false,
-                "max_volume": 100,
                 "mixer": "disabled"
             })
         );

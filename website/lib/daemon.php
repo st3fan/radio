@@ -73,7 +73,7 @@ function radio_resume(): array
     return radio_request('POST', '/resume');
 }
 
-/** $percent is 0-100, a percentage of the daemon's max_volume. */
+/** $percent is the volume, 0-100. */
 function radio_volume(int $percent): array
 {
     return radio_request('POST', '/volume', ['volume' => $percent]);

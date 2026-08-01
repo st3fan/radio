@@ -57,13 +57,12 @@ function h(string $text): string
     return htmlspecialchars($text, ENT_QUOTES);
 }
 
-/** The terminal volume bar: [██████░░░░░░░░░░░░░░] 25/50 */
-function volume_bar(int $volume, int $max_volume): string
+/** The terminal volume bar: [██████░░░░░░░░░░░░░░] 30/100 */
+function volume_bar(int $volume): string
 {
     $segments = 20;
-    $filled = $max_volume > 0 ? (int) round($volume * $segments / $max_volume) : 0;
-    $filled = max(0, min($segments, $filled));
-    return '[' . str_repeat('█', $filled) . str_repeat('░', $segments - $filled) . "] {$volume}/{$max_volume}";
+    $filled = max(0, min($segments, (int) round($volume * $segments / 100)));
+    return '[' . str_repeat('█', $filled) . str_repeat('░', $segments - $filled) . "] {$volume}/100";
 }
 
 $error = isset($_GET['error']) ? (string) $_GET['error'] : null;
@@ -71,13 +70,9 @@ $daemon = radio_status();
 $status = ($daemon['ok'] ?? false) ? $daemon['status'] : null;
 $channels = somafm_channels();
 
-// The percentage the volume form should show for the current effective
-// volume (the API takes percent-of-max; the status reports the effective
-// device volume).
-$volume_percent = 50;
-if ($status !== null && (int) $status['max_volume'] > 0) {
-    $volume_percent = (int) round((int) $status['volume'] * 100 / (int) $status['max_volume']);
-}
+// Volume is a plain 0-100 value; the loudness ceiling lives in the
+// daemon-owned hardware mixer.
+$volume_percent = $status !== null ? (int) $status['volume'] : 50;
 
 $prompt = 'STANDBY';
 if ($status !== null && $status['state'] === 'playing') {
@@ -133,7 +128,10 @@ if ($title === '' && $status['state'] === 'stopped') {
 <div class="prompt dim">&gt; <?= h($prompt) ?></div>
 <h1 class="title<?= $title_dim ? ' dim' : '' ?>"><?= h($title) ?><?= $status['state'] !== 'stopped' ? '<span class="cursor" aria-hidden="true"></span>' : '' ?></h1>
 <div class="station"><?= h((string) ($status['icy_name'] ?? '')) ?></div>
-<div class="vol dim">VOL <?= volume_bar((int) $status['volume'], (int) $status['max_volume']) ?><?= $status['muted'] ? ' · MUTED' : '' ?></div>
+<div class="vol dim">VOL <?= volume_bar((int) $status['volume']) ?><?= $status['muted'] ? ' · MUTED' : '' ?></div>
+<?php $mixer = (string) ($status['mixer'] ?? ''); if ($mixer !== '' && $mixer !== 'ok' && $mixer !== 'disabled'): ?>
+<div class="vol">MIXER <?= h($mixer) ?></div>
+<?php endif; ?>
 </section>
 
 <section class="controls">

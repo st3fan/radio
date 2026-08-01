@@ -12,7 +12,6 @@ use tokio::net::TcpListener;
 use crate::player::{Command, Player};
 use crate::pls::PlsError;
 use crate::status::{State, Status};
-use crate::volume;
 
 /// Maximum accepted request body; our biggest body is one playlist URL.
 const MAX_BODY_BYTES: usize = 64 * 1024;
@@ -105,15 +104,12 @@ async fn route(method: &Method, url: &str, body: &str, app: &App) -> (u16, Strin
                 Ok(request) => request,
                 Err(err) => return (400, error_body(&format!("invalid request body: {err}"))),
             };
-            // The request is a percentage of max_volume: 100 means "as loud
-            // as the cap allows". The stored/returned value is the effective
-            // device volume.
             if request.volume > 100 {
                 return (400, error_body("volume must be between 0 and 100"));
             }
             {
                 let mut status = app.status.lock().expect("status lock poisoned");
-                status.volume = volume::effective_volume(request.volume, status.max_volume);
+                status.volume = request.volume;
             }
             (200, status_body(app))
         }

@@ -14,17 +14,20 @@ an ARMv7 Banana Pi) connected to studio speakers. Two components:
 
 The overall design and roadmap live in `notes/plan.md`. Read that first.
 
-## Critical invariant: maximum volume
+## Critical invariant: the mixer ceiling
 
-The audio level sent to the device can **never** exceed the configured
-`max_volume`. If not configured, the maximum is **50** (0–100 scale). This is
-a safety requirement — the Pi drives studio speakers. All decoded PCM flows
-through our code, and the gain applied to it must come from a single,
-unit-tested function: `volume::effective_volume()` maps user-facing volume
-values (0–100, a percentage of `max_volume`) onto `[0, max_volume]`, so the
-cap cannot be exceeded by construction; muted means gain 0. Never add a code
-path between decoder and ALSA that bypasses it, and never touch the
-hardware/ALSA mixer volume.
+The speakers are protected by a **hardware ceiling that radiod owns**: the
+ALSA mixer control named in the `[mixer]` config section is set to the
+configured ceiling, read back and verified at startup, and re-asserted at
+every playback session start — playing without a verified ceiling is
+refused (this covers `alsamixer` meddling, boot-time `alsactl restore`,
+and re-enumerating USB DACs). This is a safety requirement — the box
+drives studio speakers. Belt and braces on top: the digital path runs at
+full scale, and all gain flows through `volume::gain()` /
+`volume::apply_gain()`, which clamp so software can attenuate but
+**never amplify**; muted means gain 0. Never add a code path between
+decoder and ALSA that bypasses that clamp, and never write code that
+raises the mixer above the configured ceiling.
 
 ## Hardware constraints
 

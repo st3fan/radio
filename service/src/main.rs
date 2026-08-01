@@ -183,7 +183,17 @@ async fn main() -> ExitCode {
     };
 
     let status = Arc::new(Mutex::new(initial_status));
-    let player = player::spawn(status.clone(), sink, Box::new(make_source));
+    // The player owns the mixer from here: the ceiling is re-asserted at
+    // every session start, so external meddling (alsamixer, alsactl
+    // restore, a re-enumerating USB DAC) is corrected before audio flows.
+    let player = player::spawn_with_tuning(
+        status.clone(),
+        sink,
+        mixer,
+        Box::new(make_source),
+        player::Tuning::default(),
+    )
+    .0;
     let app = Arc::new(server::App {
         status: status.clone(),
         player: player.clone(),

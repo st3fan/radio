@@ -71,11 +71,9 @@ Reconnects to the remembered stream.
 
 Body: `{"volume": 30}`
 
-The value is **a percentage of `max_volume`** (0–100): 100 means "as loud
-as the cap allows", never louder. With the default `max_volume = 50`, a
-request of 100 yields an effective device volume of 50, and a request of
-30 yields 15. The stored and reported `volume` is always the effective
-device value. Exceeding the cap is impossible by construction.
+The value is the volume, 0–100. Loudness protection does not live here:
+the daemon owns the ALSA mixer and pins the hardware output to the
+configured ceiling, so 100 means "as loud as the ceiling allows".
 
 Takes effect within one audio chunk (~25 ms), whether or not something is
 playing.
@@ -105,7 +103,7 @@ distinct from `volume 0`: `muted` is a separate flag in the status.
   "icy_name": "DEF CON Radio: SomaFM's year-round channel for DEF CON [SomaFM]",
   "volume": 25,
   "muted": false,
-  "max_volume": 50
+  "mixer": "ok"
 }
 ```
 
@@ -116,16 +114,16 @@ distinct from `volume 0`: `muted` is a separate flag in the status.
 | `stream_url`   | string \| null  | The resolved icecast stream URL. Same lifecycle. |
 | `icy_title`    | string \| null  | The current song (ICY `StreamTitle`), updated live as songs change. `null` when the stream sends none, when stopped, and briefly after a station switch. Survives pause. |
 | `icy_name`     | string \| null  | The station name (ICY `icy-name` header). Same lifecycle as `icy_title`. |
-| `volume`       | integer         | The **effective device volume** (0–`max_volume`), not the percentage that was requested. |
+| `volume`       | integer         | The volume, 0–100. |
 | `muted`        | boolean         | Gain is forced to 0 when true; `volume` keeps its value. |
-| `max_volume`   | integer         | The configured hard cap. Read-only through the API; changing it requires editing the config and restarting. |
+| `mixer`        | string          | Health of the daemon-owned hardware ceiling: `"ok"`, `"disabled"` (dev sinks without a mixer), or `"error: ..."` — playback is refused while the ceiling cannot be asserted. |
 
 ## Examples
 
 ```sh
 curl http://127.0.0.1:8080/status
 curl -X POST http://127.0.0.1:8080/play -d '{"playlist_url": "https://somafm.com/defcon.pls"}'
-curl -X POST http://127.0.0.1:8080/volume -d '{"volume": 60}'   # 60% of the cap
+curl -X POST http://127.0.0.1:8080/volume -d '{"volume": 60}'
 curl -X POST http://127.0.0.1:8080/mute
 curl -X POST http://127.0.0.1:8080/unmute
 curl -X POST http://127.0.0.1:8080/pause
