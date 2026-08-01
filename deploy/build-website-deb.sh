@@ -1,10 +1,11 @@
 #!/bin/sh
 # Builds radio-website_<version>_all.deb. Needs only dpkg-deb; run on the
 # Debian PC (or any Debian container). The result lands in the repo root.
+# The release workflow overrides the version with the git tag's.
 
 set -eu
 
-VERSION=0.3.0-1
+VERSION="${RADIO_WEBSITE_VERSION:-0.3.0-1}"
 
 cd "$(dirname "$0")/.."
 stage=$(mktemp -d)
