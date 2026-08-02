@@ -112,8 +112,12 @@ body::after {
     font-weight: 700;
     margin: 2px 0;
     letter-spacing: 0.02em;
-    /* One line, always: long titles fade out at the edge instead of
-       wrapping and shoving the layout around. */
+}
+
+/* One line, always: long titles and station names fade out at the edge
+   instead of wrapping and shoving the layout around. */
+.now .title,
+.now .station {
     white-space: nowrap;
     overflow: hidden;
     -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 56px), transparent);
