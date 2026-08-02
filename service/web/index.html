@@ -35,7 +35,14 @@
 <div class="prompt dim">&gt; {{ prompt }}</div>
 <h1 class="title{% if title_dim %} dim{% endif %}">{{ title }}{% if state != "stopped" %}<span class="cursor" aria-hidden="true"></span>{% endif %}</h1>
 <div class="station">{{ icy_name }}</div>
-<div class="vol dim">VOL {{ volume_bar }}{% if muted %} · MUTED{% endif %}</div>
+{# The bar is the slider: twenty segment-buttons in one form, each
+   submitting its position's volume; the nudge buttons share the form. #}
+<form class="vol dim volbar" method="post" action="/" hx-post="/" hx-target="#app" hx-select="#app" hx-swap="outerHTML">
+<input type="hidden" name="action" value="volume">
+VOL [{% for i in range(1, 21) %}<button class="seg" name="volume" value="{{ i * 5 }}" title="volume {{ i * 5 }}">{% if i <= volume_filled %}█{% else %}░{% endif %}</button>{% endfor %}] {{ volume }}/100{% if muted %} · MUTED{% endif %}
+<button name="volume" value="{{ volume_down }}">[VOL-]</button>
+<button name="volume" value="{{ volume_up }}">[VOL+]</button>
+</form>
 {% if mixer_warning %}
 <div class="vol">MIXER {{ mixer_warning }}</div>
 {% endif %}
@@ -57,14 +64,6 @@
 {% else %}
 <form method="post" action="/" hx-post="/" hx-target="#app" hx-select="#app" hx-swap="outerHTML"><button name="action" value="mute">[MUTE]</button></form>
 {% endif %}
-<form method="post" action="/" hx-post="/" hx-target="#app" hx-select="#app" hx-swap="outerHTML">
-<input type="hidden" name="volume" value="{{ volume_down }}">
-<button name="action" value="volume">[VOL-]</button>
-</form>
-<form method="post" action="/" hx-post="/" hx-target="#app" hx-select="#app" hx-swap="outerHTML">
-<input type="hidden" name="volume" value="{{ volume_up }}">
-<button name="action" value="volume">[VOL+]</button>
-</form>
 </section>
 
 

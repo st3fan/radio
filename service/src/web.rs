@@ -318,7 +318,7 @@ struct PageContext {
     title_dim: bool,
     icy_name: String,
     volume: u8,
-    volume_bar: String,
+    volume_filled: usize,
     volume_up: u8,
     volume_down: u8,
     muted: bool,
@@ -372,7 +372,7 @@ async fn render_page(app: &App, error: Option<String>) -> Reply {
             title_dim,
             icy_name: status.icy_name.clone().unwrap_or_default(),
             volume: status.volume,
-            volume_bar: volume_bar(status.volume),
+            volume_filled: volume_filled(status.volume),
             volume_up: (status.volume + 10).min(100),
             volume_down: status.volume.saturating_sub(10),
             muted: status.muted,
@@ -408,17 +408,12 @@ fn render_template(app: &App, context: &PageContext) -> Result<String, minijinja
     env.get_template("index.html")?.render(context)
 }
 
-/// The terminal volume bar: `[██████░░░░░░░░░░░░░░] 30/100`
-fn volume_bar(volume: u8) -> String {
+/// How many of the volume bar's 20 segments are filled (nearest-rounded,
+/// matching the old text rendering). The template turns each segment into
+/// a button that sets that position's volume.
+fn volume_filled(volume: u8) -> usize {
     let segments = 20usize;
-    // Round to nearest, matching the PHP site's rendering.
-    let filled = ((usize::from(volume.min(100)) * segments + 50) / 100).min(segments);
-    format!(
-        "[{}{}] {}/100",
-        "█".repeat(filled),
-        "░".repeat(segments - filled),
-        volume
-    )
+    ((usize::from(volume.min(100)) * segments + 50) / 100).min(segments)
 }
 
 /// Minimal application/x-www-form-urlencoded parsing: enough for our own
@@ -512,10 +507,12 @@ mod tests {
     }
 
     #[test]
-    fn volume_bar_matches_the_php_rendering() {
-        assert_eq!(volume_bar(0), "[░░░░░░░░░░░░░░░░░░░░] 0/100");
-        assert_eq!(volume_bar(100), "[████████████████████] 100/100");
-        assert!(volume_bar(50).starts_with("[██████████░░░░░░░░░░]"));
+    fn volume_fill_counts_match_the_old_text_rendering() {
+        assert_eq!(volume_filled(0), 0);
+        assert_eq!(volume_filled(100), 20);
+        assert_eq!(volume_filled(50), 10);
+        assert_eq!(volume_filled(31), 6); // nearest, not ceiling
+        assert_eq!(volume_filled(255), 20);
     }
 
     #[test]

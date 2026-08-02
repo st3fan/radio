@@ -230,3 +230,13 @@ footer {
 .quiet:hover {
     text-decoration: underline;
 }
+
+/* ---- the clickable volume bar ---- */
+
+.volbar .seg {
+    /* Indistinguishable from the text bar: no horizontal padding so the
+       blocks touch; the vertical touch-target trick stays. */
+    padding: 8px 0;
+    margin: -8px 0;
+    color: inherit;
+}
