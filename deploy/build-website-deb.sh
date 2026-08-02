@@ -5,7 +5,7 @@
 
 set -eu
 
-VERSION="${RADIO_WEBSITE_VERSION:-0.3.0-1}"
+VERSION="${RADIO_WEBSITE_VERSION:-0.2.0-1}"
 
 cd "$(dirname "$0")/.."
 stage=$(mktemp -d)
