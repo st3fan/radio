@@ -14,9 +14,6 @@ on:
   release:
     types: [published]
 
-permissions:
-  contents: write
-
 defaults:
   run:
     shell: bash
@@ -24,6 +21,12 @@ defaults:
 jobs:
   radiod:
     name: radiod ${{ matrix.arch }}
+    # id-token + attestations: sign SLSA build provenance for the .deb
+    # (verify with `gh attestation verify`). This job never writes the repo.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       # One leg's failure (e.g. a docker-pull flake on one runner) must not
       # cancel the other architectures' builds.
@@ -79,6 +82,11 @@ jobs:
       - name: Build .deb
         run: ./service/build-deb.sh ${{ matrix.arch }}
 
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: service/target/debian/radiod_*_${{ matrix.arch }}.deb
+
       - uses: actions/upload-artifact@v4
         with:
           name: radiod-${{ matrix.arch }}
@@ -90,6 +98,10 @@ jobs:
     needs: radiod
     runs-on: ubuntu-latest
     container: debian:trixie
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     env:
       TAG: ${{ github.event.release.tag_name }}
     steps:
@@ -119,6 +131,11 @@ jobs:
 
       - name: Build website .deb
         run: RADIO_WEBSITE_VERSION="${TAG#v}-1" ./deploy/build-website-deb.sh
+
+      - name: Attest website build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: radio-website_*_all.deb
 
       - uses: actions/download-artifact@v4
         with:
