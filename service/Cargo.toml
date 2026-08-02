@@ -61,3 +61,6 @@ maintainer-scripts = "../deploy/debian"
 unit-scripts = "../deploy"
 enable = true
 start = true
+# Upgrades must swap the running daemon, not leave the old binary playing
+# until someone remembers to restart (found upgrading muzak to 0.2.0).
+restart-after-upgrade = true
