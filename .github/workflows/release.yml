@@ -81,6 +81,9 @@ jobs:
 
       - name: Build .deb
         run: ./service/build-deb.sh ${{ matrix.arch }}
+        env:
+          # Official release: the banner shows the version, not a dev hash.
+          RADIOD_RELEASE_BUILD: "1"
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v4

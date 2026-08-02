@@ -391,6 +391,9 @@ async fn action_play(app: &App, channel_id: &str) -> Result<(), String> {
 struct PageContext {
     /// Compiled-in crate version; the banner links to its release page.
     version: &'static str,
+    /// Non-empty (the short git hash) for unofficial builds: the banner
+    /// then reads RADIO DEV (<hash>) and links to the commit.
+    dev_hash: &'static str,
     error: Option<String>,
     state: &'static str,
     prompt: &'static str,
@@ -511,6 +514,7 @@ async fn render_page(app: &App, error: Option<String>, sort: Option<Sort>) -> Re
         });
         PageContext {
             version: env!("CARGO_PKG_VERSION"),
+            dev_hash: env!("RADIOD_DEV_HASH"),
             error,
             state,
             prompt,
