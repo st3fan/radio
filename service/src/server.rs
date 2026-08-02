@@ -1288,8 +1288,14 @@ mod tests {
         assert!(groove < defcon, "insertion order, not listener order");
         // The playing station is marked in the favourites section too.
         assert!(favourites_section.contains("[ON AIR]"));
+        // A favourite appears in one list only: with both stations
+        // favourited, CHANNELS has no duplicate rows left.
+        let channels_section = html.split_once("CHANNELS").unwrap().1;
+        assert!(!channels_section.contains("Groove Salad"));
+        assert!(!channels_section.contains("DEF CON Radio"));
 
-        // Second press removes: defcon un-favourited, groovesalad stays.
+        // Second press removes: defcon un-favourited, groovesalad stays —
+        // and defcon returns to CHANNELS while groovesalad stays out.
         let crate::web::Reply::Html(_, html) =
             web(&Method::POST, "/", None, "action=favourite", true, &app).await
         else {
@@ -1301,9 +1307,13 @@ mod tests {
             favourites,
             vec![crate::status::Favourite::somafm("groovesalad")]
         );
+        let channels_section = html.split_once("CHANNELS").unwrap().1;
+        assert!(channels_section.contains("DEF CON Radio"));
+        assert!(!channels_section.contains("Groove Salad"));
 
         // An id the channel list stops serving renders as nothing but
-        // stays on the list; an unknown source is skipped the same way.
+        // stays on the list; an unknown source is skipped the same way —
+        // and an unresolvable favourite must not hide its channel.
         {
             let mut status = app.status.lock().unwrap();
             status.favourites = vec![
@@ -1322,6 +1332,8 @@ mod tests {
             !html.contains("FAVOURITES"),
             "nothing resolvable, no section"
         );
+        assert!(html.contains("Groove Salad"));
+        assert!(html.contains("DEF CON Radio"));
         assert_eq!(app.status.lock().unwrap().favourites.len(), 2);
     }
 

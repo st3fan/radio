@@ -589,9 +589,20 @@ async fn render_page(app: &App, error: Option<String>, sort: Option<Sort>) -> Re
             })
             .unwrap_or_default();
         let favourites = (!favourites.is_empty()).then_some(favourites);
+        // A favourite appears in one list only: whatever renders under
+        // FAVOURITES leaves CHANNELS. Keyed on the rows that actually
+        // resolved, so an unresolvable favourite never makes a channel
+        // vanish from both lists.
+        let favourite_ids: Vec<&str> = favourites
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect();
         let channels = channels.map(|list| {
             let mut list: Vec<Channel> = list
                 .iter()
+                .filter(|channel| !favourite_ids.contains(&channel.id.as_str()))
                 .map(|channel| {
                     let mut channel = channel.clone();
                     channel.is_current = !airplay_active
