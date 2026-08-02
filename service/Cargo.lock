@@ -410,7 +410,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -897,7 +897,7 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 [[package]]
 name = "openairplay2"
 version = "0.1.0"
-source = "git+https://github.com/st3fan/openairplay2#f624cc8753cc9ca6f1c789aa0831614ad6d55fc2"
+source = "git+https://github.com/st3fan/openairplay2#34f784c0b590f2fa1065e044a6fe95839d1a70cf"
 dependencies = [
  "base64",
  "chacha20poly1305",
@@ -1156,7 +1156,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1435,7 +1435,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

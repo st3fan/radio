@@ -130,6 +130,40 @@ body::after {
 /* Standby: SomaFM's lone DJ holds the frame, dimmed like an idle tube. */
 .now .art.empty img { opacity: 0.55; }
 
+/* AirPlay: air waves radiating from the center, in the current
+   phosphor. Plain SVG + CSS — theme-aware via currentColor. */
+.now .art.airwaves {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--phosphor);
+}
+
+.airwaves svg {
+    width: 100%;
+    height: 100%;
+}
+
+.airwaves .w {
+    transform-origin: 48px 48px;
+    opacity: 0;
+    animation: airwave 3.2s linear infinite;
+}
+
+.airwaves .w2 { animation-delay: 0.8s; }
+.airwaves .w3 { animation-delay: 1.6s; }
+.airwaves .w4 { animation-delay: 2.4s; }
+
+@keyframes airwave {
+    0% { transform: scale(0.25); opacity: 0; }
+    12% { opacity: 0.9; }
+    100% { transform: scale(1); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .airwaves .w { animation: none; opacity: 0.5; }
+}
+
 /* The artwork glows in whatever phosphor the tube is running. */
 html[data-theme="amber"] .now .art img {
     filter: grayscale(1) sepia(1) saturate(1.8) brightness(0.9) contrast(1.05);

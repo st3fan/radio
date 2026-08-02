@@ -26,6 +26,9 @@ pub enum Reply {
     /// 303 See Other — POST-redirect-GET for non-HTMX form posts.
     Redirect(String),
     Asset(&'static str, Vec<u8>),
+    /// AirPlay cover art: cacheable for a short while (the page busts
+    /// the URL per track via `?v=N`, so polls stay cheap).
+    Artwork(&'static str, Vec<u8>),
     NotFound,
 }
 
@@ -257,8 +260,31 @@ pub async fn route(
             Some(render_page(app, error, sort).await)
         }
         (&hyper::Method::POST, "/") => Some(handle_action(app, body, hx_request, sort).await),
+        (&hyper::Method::GET, "/airplay/artwork") => Some(serve_artwork(app)),
         (&hyper::Method::GET, _) => serve_asset(app, path),
         _ => None,
+    }
+}
+
+/// The sender's cover art, only while an AirPlay session owns the
+/// pipeline (outside one there is nothing current to show — 404).
+fn serve_artwork(app: &App) -> Reply {
+    let status = app.status.lock().expect("status lock poisoned");
+    if status.source != AudioSource::Airplay {
+        return Reply::NotFound;
+    }
+    match &status.airplay_artwork {
+        Some(artwork) => {
+            // The sender's content type, pinned to the values we expect;
+            // anything else is still an image to the browser's sniffer.
+            let content_type = match artwork.content_type.as_str() {
+                "image/jpeg" => "image/jpeg",
+                "image/png" => "image/png",
+                _ => "application/octet-stream",
+            };
+            Reply::Artwork(content_type, artwork.data.as_ref().clone())
+        }
+        None => Reply::NotFound,
     }
 }
 
@@ -410,6 +436,13 @@ struct PageContext {
     /// Artwork of the station that is playing (or paused); None renders
     /// the empty frame so the layout never moves.
     now_image: Option<String>,
+    /// The AirPlay station line: "ARTIST — ALBUM" when the sender
+    /// pushed metadata, else the negotiated stream ("44100 HZ · 2 CH ·
+    /// AAC").
+    airplay_stream: String,
+    /// Versioned URL of the sender's cover art (`/airplay/artwork?v=N`),
+    /// None while there is none — the airwaves mark fills the box then.
+    airplay_artwork: Option<String>,
     channels: Option<Vec<Channel>>,
     /// "" for the default view, else "?sort=..&dir=.." — baked into the
     /// poll URL and form targets so the chosen order survives swaps.
@@ -464,7 +497,7 @@ async fn render_page(app: &App, error: Option<String>, sort: Option<Sort>) -> Re
             State::Stopped => "stopped",
         };
         let prompt = if airplay_active {
-            "AIRPLAY"
+            "STREAMING OPENAIRPLAY"
         } else {
             match status.state {
                 State::Playing => "NOW PLAYING",
@@ -474,8 +507,16 @@ async fn render_page(app: &App, error: Option<String>, sort: Option<Sort>) -> Re
         };
         let mut title = status.icy_title.clone().unwrap_or_default();
         let mut title_dim = false;
-        if airplay_active && title.is_empty() {
-            title = "— AIRPLAY —".to_string();
+        if airplay_active {
+            // DMAP track metadata when the sender pushed any; the
+            // placeholder only for senders that send none.
+            match status.airplay_track.as_ref().and_then(|t| t.title.clone()) {
+                Some(track_title) => title = track_title,
+                None => {
+                    title = "— NO TRACK INFO —".to_string();
+                    title_dim = true;
+                }
+            }
         } else if status.state == State::Paused {
             // Stopped-but-remembered: the song is gone, the station is
             // kept — just the cursor blinking on an empty line.
@@ -529,6 +570,28 @@ async fn render_page(app: &App, error: Option<String>, sort: Option<Sort>) -> Re
             mixer_warning: (status.mixer != "ok" && status.mixer != "disabled")
                 .then(|| status.mixer.clone()),
             airplay_active,
+            // ARTIST — ALBUM when the sender told us; the negotiated
+            // stream line is the fallback for metadata-less senders.
+            airplay_stream: status
+                .airplay_track
+                .as_ref()
+                .and_then(|track| {
+                    let parts: Vec<&str> = [track.artist.as_deref(), track.album.as_deref()]
+                        .into_iter()
+                        .flatten()
+                        .collect();
+                    (!parts.is_empty()).then(|| parts.join(" — "))
+                })
+                .or_else(|| {
+                    status
+                        .airplay
+                        .map(|info| format!("{} HZ · {} CH · AAC", info.rate, info.channels))
+                })
+                .unwrap_or_default(),
+            airplay_artwork: status
+                .airplay_artwork
+                .as_ref()
+                .map(|artwork| format!("/airplay/artwork?v={}", artwork.version)),
             now_image,
             channels,
             sort_query: sort_query(sort),
