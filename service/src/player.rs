@@ -350,17 +350,22 @@ fn play(
     }
 
     // Optimistic: `playing` means "trying to play". Set before opening so
-    // the status holds steady through reconnect attempts. Metadata resets
-    // per session — a new station (or a reconnect) repopulates it.
+    // the status holds steady through reconnect attempts. The song title
+    // resets per session (live radio moved on), but the station name is
+    // kept when the station is unchanged — resume and reconnects must not
+    // blank it; only an actual station switch clears it.
     {
         let mut status = status.lock().expect("status lock poisoned");
+        let same_station = status.playlist_url.as_deref() == Some(station.playlist_url.as_str());
         status.state = State::Playing;
         status.source = AudioSource::Radio;
         status.airplay = None;
         status.playlist_url = Some(station.playlist_url.clone());
         status.stream_url = Some(station.stream_url.clone());
         status.icy_title = None;
-        status.icy_name = None;
+        if !same_station {
+            status.icy_name = None;
+        }
     }
 
     let stream_url = station.stream_url.as_str();
@@ -1290,6 +1295,51 @@ mod tests {
             status.playlist_url, None,
             "no resume after an explicit stop"
         );
+    }
+
+    #[test]
+    fn resume_keeps_the_station_name_and_clears_the_song() {
+        let status = playing_status("");
+        let sink = TestSink::default();
+        let opens = Arc::new(Mutex::new(0u32));
+        let opens_in_factory = opens.clone();
+        // Metadata only on the first connection: on resume, anything still
+        // visible must have been *kept*, not repopulated.
+        let factory: SourceFactory = Box::new(move |_| {
+            let mut opens = opens_in_factory.lock().unwrap();
+            *opens += 1;
+            if *opens == 1 {
+                Ok(Box::new(MetadataSource {
+                    inner: SineSource::new(),
+                    reads: 0,
+                    schedule: vec![(1, "First Song")],
+                    emitted: 0,
+                }))
+            } else {
+                Ok(Box::new(SineSource::new()))
+            }
+        });
+        let player = spawn(status.clone(), Box::new(sink.clone()), factory);
+        start_playing(&player, &status);
+        wait_for(|| status.lock().unwrap().icy_title.as_deref() == Some("First Song"));
+
+        player.send(Command::Pause);
+        wait_for(|| status.lock().unwrap().state == State::Paused);
+        player.send(Command::Resume);
+        wait_for(|| status.lock().unwrap().state == State::Playing);
+        wait_for(|| *opens.lock().unwrap() == 2);
+        {
+            let status = status.lock().unwrap();
+            assert_eq!(
+                status.icy_name.as_deref(),
+                Some("Test FM"),
+                "same station: the name survives the resume"
+            );
+            assert_eq!(status.icy_title, None, "the song does not");
+        }
+
+        player.send(Command::Stop);
+        wait_for(|| status.lock().unwrap().state == State::Stopped);
     }
 
     #[test]
