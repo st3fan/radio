@@ -23,9 +23,18 @@
    unchanged, no indicator until a heading is clicked; then a `^`/`v`
    indicator, click again to flip direction.
 8. Poll interval 5 s → 2.5 s.
+9. The VOL-/VOL+ buttons move next to the volume bar, and the bar
+   itself becomes clickable: click a position, get that volume.
 
 ## Design notes
 
+- **The clickable volume bar** stays terminal-true: the 20 bar
+  segments render as individual buttons inside one volume form, each
+  styled to be indistinguishable from the `█`/`░` text (monospace,
+  no chrome, inherited color, pointer cursor); clicking segment N
+  submits `volume = N×5`. No JS beyond the usual HTMX swap, plain
+  form post without it. VOL-/VOL+ sit at the end of the same line for
+  single-step nudges.
 - **Sorting is server-side**, carried in the query string
   (`/?sort=station&dir=asc`): headings are plain links (no-JS works)
   with HTMX swap + `hx-push-url`; the rendered page bakes the current
@@ -54,10 +63,11 @@
 1. plan (this document)
 2. `web-links` — changes 1 + 2
 3. `web-no-volbox` — change 3
-4. `web-no-transport` — change 4
-5. `web-poll-interval` — change 8
-6. `web-sortable-channels` — change 7
-7. `web-now-playing-art` — changes 5 + 6
+4. `web-volume-bar` — change 9
+5. `web-no-transport` — change 4
+6. `web-poll-interval` — change 8
+7. `web-sortable-channels` — change 7
+8. `web-now-playing-art` — changes 5 + 6
 
 Each PR: template/CSS/web.rs edits + adjusted route tests where
 behavior changes (sorting gets real tests; removals get assertion
