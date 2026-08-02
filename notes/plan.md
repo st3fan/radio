@@ -2,31 +2,26 @@
 
 An internet radio player for a small ARM board (an arm64 Raspberry Pi or
 an ARMv7 Banana Pi; originally a Raspberry Pi Zero W) connected to studio
-speakers. Two components:
-
-1. **`radiod`** — a Rust daemon exposing an HTTP REST API on `127.0.0.1` that
-   plays an audio stream (from a `.pls` playlist URL such as
-   `https://somafm.com/defcon.pls`) to a preconfigured ALSA device.
-2. **Website** — a PHP site on the same Pi that lists the SomaFM channels from
-   `https://api.somafm.com/channels.json` and lets you pick one; picking a
-   channel sends its playlist URL to the daemon.
+speakers. One binary, `radiod`: it plays an audio stream (from a `.pls`
+playlist URL such as `https://somafm.com/defcon.pls`) to a preconfigured
+ALSA device, embeds an AirPlay 2 receiver, and serves its own website
+(SomaFM channel picker + controls) and JSON API on port 80.
 
 ## Hard constraints
 
-- **Volume safety (critical):** the audio level sent to the device can *never*
-  exceed a preconfigured maximum. Default maximum is **50** (on a 0–100
-  scale). This is a safety invariant, not a preference — the Pi drives studio
-  speakers. Every code path that produces audio must go through a single gain
-  function bounded by this maximum. User-facing volume values are a
-  percentage of `max_volume` (100 = the cap), so exceeding it is impossible
-  by construction.
+- **Volume safety (critical):** the speakers are protected by a hardware
+  mixer ceiling that radiod owns — asserted, verified and re-asserted on
+  every playback session (milestone 10; see CLAUDE.md's critical
+  invariant). The digital path runs at full scale and its gain clamp can
+  attenuate but never amplify.
 - **Hardware:** a small ARM board with 512 MB RAM — an arm64 Raspberry Pi
   (`aarch64-unknown-linux-gnu`) or an ARMv7 Banana Pi BPI-M2 Zero
   (`armv7-unknown-linux-gnueabihf`, Debian armhf). Keep CPU and memory
   use low and dependencies few. (Originally a single-core ARMv6 Pi
   Zero W, retired 2026-08 — see `plans/20260801-12-*.md`.)
-- Daemon API binds `127.0.0.1` only. The PHP site talks to it server-side,
-  so nothing on the LAN can reach the daemon directly.
+- The HTTP server faces the LAN by design (it carries the website); the
+  JSON API exposes exactly the controls the website offers, nothing
+  more. No auth — a home-LAN appliance.
 
 ## Component 1: `radiod` (Rust daemon)
 
@@ -80,7 +75,8 @@ playlist URL (.pls)
 | HTTP server        | `hyper` on tokio                  | Served by `tiny_http` through milestone 8; milestone 9 moved the control plane onto a current-thread tokio runtime (see `plans/20260801-09-async-tokio.md`) so milestone 11 can embed the async openairplay2 library. Raw hyper, not axum: the hand-rolled router is the API contract and the dependency tree stays smaller. |
 | HTTP client        | `ureq`                            | Only for fetching the `.pls` (a 5-line INI we parse by hand). |
 | Config             | `serde` + `toml`                  | |
-| Packaging          | `cargo-deb` (daemon), `dpkg-deb` (website) | See "Packaging & deployment" below. |
+| Packaging          | `cargo-deb`                       | See "Packaging & deployment" below. |
+| Website            | minijinja + vendored HTMX         | Served by radiod itself since the absorb-website milestone (`plans/20260802-01-*.md`): templates/assets embedded in the binary, `--web-dir` for dev edit-and-reload. PHP + lighttpd retired. |
 
 ### Build & runtime dependencies
 
@@ -102,8 +98,8 @@ playlist URL (.pls)
 
 ### Packaging & deployment
 
-Both components ship as Debian packages; distribution is scp +
-`apt install ./<deb>` (see the top-level README for the commands):
+One Debian package; distribution is scp + `apt install ./<deb>` or the
+GitHub release assets (see the top-level README):
 
 - **`radiod_<version>_{amd64,arm64,armhf}.deb`** (cargo-deb, via
   `service/build-deb.sh`): `/usr/bin/radiod`, a systemd unit (dedicated
@@ -112,12 +108,9 @@ Both components ship as Debian packages; distribution is scp +
   so upgrades never clobber local edits, Depends pinned to trixie's
   package names, and a preinst guard that keeps the armhf (ARMv7)
   package off ARMv6 hardware.
-- **`radio-website_<version>_all.deb`** (dpkg-deb, via
-  `deploy/build-website-deb.sh`): the site under `/var/www/radio`
-  (`lib/` outside the docroot), a lighttpd conf-available snippet riding
-  Debian's own version-independent php-fpm wiring, and a php-fpm pool
-  override (`pm = static`, `pm.max_children = 2` — 512 MB shared with the
-  daemon) installed per PHP version at postinst time.
+
+(The former `radio-website_all.deb` — PHP on lighttpd + php-fpm — was
+absorbed into radiod; the radiod package Conflicts/Replaces it.)
 
 Measured on the (since retired) Pi Zero: ~7% CPU and ~30 MB RSS while
 playing; page loads in ~0.3 s; everything comes back by itself after a
@@ -129,12 +122,10 @@ TOML file, path via `--config` (default `/etc/radio/config.toml`; the
 radiod package ships a documented example there as a conffile). All fields
 optional:
 
-```toml
-listen = "127.0.0.1:8080"     # must be loopback
-audio_device = "plughw:0,0"   # ALSA device (aplay -l)
-max_volume = 50               # hard cap, defaults to 50 if omitted
-initial_volume = 50           # startup volume, a percentage of max_volume
-```
+See `deploy/config.toml.example` for the authoritative, commented
+example: `listen` (port 80 on the radio), `audio_device`, the `[mixer]`
+ceiling (required for ALSA playback), `initial_volume`, and the
+`[airplay]` section.
 
 ### REST API
 
@@ -169,38 +160,30 @@ The full reference (exact status codes, edge cases, field lifecycles) is
 
 Errors: JSON body `{"error": "…"}` with appropriate 4xx/5xx status.
 
-## Component 2: Website (PHP)
+## Component 2: the built-in website
 
-Plain PHP, kept deliberately simple — fast to iterate on, trivial resource
-footprint. Lives in `website/`.
+Originally plain PHP behind lighttpd + php-fpm; absorbed into radiod in
+the absorb-website milestone (`plans/20260802-01-absorb-website.md`).
+Now: minijinja templates + vendored HTMX served by radiod's own hyper
+server on port 80, `service/web/` embedded into the binary.
 
-- Fetches `https://api.somafm.com/channels.json` server-side and caches it on
-  disk (e.g. 5-minute TTL) so we don't hammer SomaFM and pages stay fast on
-  the Pi.
-- Lists channels (artwork, title, genre, description, listeners, sorted by
-  listeners) with a **Play** button per channel. Play forms submit channel
-  *ids*; the server resolves the `.pls` URL from its own cached channel
-  data, so the browser never feeds URLs to the daemon — and never talks to
-  the daemon at all.
-- A status area showing `GET /status` (state, station, icy-title, volume)
-  plus pause/resume, stop, mute, and volume controls — all proxied through
-  PHP, POST-redirect-GET throughout, all external data escaped.
-- Functional, unstyled HTML (forms + full-page reloads). Styling and JS
-  niceties (auto-refreshing now-playing) are the remaining polish
-  milestone.
-- Serving: `php -S` for development; in production lighttpd + php-fpm,
-  installed and wired by the `radio-website` package (port 80 on the LAN —
-  the one intentionally reachable piece).
+- Fetches `https://api.somafm.com/channels.json` server-side with a
+  5-minute in-memory cache and a stale fallback.
+- Lists channels (sorted by listeners) with a **Play** button per
+  channel; forms submit channel *ids* and the server resolves the
+  playlist URL from its own cached channel data.
+- Now-playing (state, station, icy-title, volume) with pause/resume,
+  stop, mute and volume controls: HTMX swaps for reload-free buttons
+  and a 5 s poll, plain POST-redirect-GET forms without JS.
+- Installable iPhone PWA; the origin `http://<host>/` (port 80) is part
+  of its identity.
 
 ## Repository layout
 
-Monorepo with the two components as top-level directories:
-
 ```
 service/      Rust daemon (cargo project; the binary is named radiod)
-website/      PHP website
-deploy/       packaging: systemd unit, config example, maintainer scripts,
-              the website .deb build script
+service/web/  website templates + static assets (embedded at build time)
+deploy/       packaging: systemd unit, config example, maintainer scripts
 notes/        long-lived notes, this plan
 plans/        per-step implementation plans (YYYYMMDD-NN-slug.md)
 ```

@@ -1,16 +1,20 @@
 # Radio
 
-An internet radio player for a small ARM board (an arm64 Raspberry Pi or
-an ARMv7 Banana Pi) connected to studio speakers. Two components:
+An internet radio player and AirPlay speaker for a small ARM board (an
+arm64 Raspberry Pi or an ARMv7 Banana Pi) connected to studio speakers.
+One component: `service/`, a Rust daemon (`radiod`) that plays a stream
+(from a `.pls` playlist URL) to a preconfigured ALSA device, embeds an
+AirPlay 2 receiver (the `openairplay2` library), and serves its own
+website — server-rendered minijinja templates with HTMX interactions
+from `service/web/`, LAN-facing on port 80 alongside the JSON API
+(`notes/api.md`). Streaming, demuxing and decoding are done in-process
+via the FFmpeg libraries (libavformat/libavcodec, through the
+`ffmpeg-next` crate); ALSA output via the `alsa` crate. The distro's
+libav*/libasound shared libraries are runtime dependencies on the
+radio.
 
-- `service/` — Rust daemon with an HTTP REST API on `127.0.0.1` that plays a
-  stream (from a `.pls` playlist URL) to a preconfigured ALSA device.
-  Streaming, demuxing and decoding are done in-process via the FFmpeg
-  libraries (libavformat/libavcodec, through the `ffmpeg-next` crate); ALSA
-  output via the `alsa` crate. The distro's libav*/libasound shared
-  libraries are runtime dependencies on the Pi.
-- `website/` — PHP website on the same Pi that lists SomaFM channels and controls
-  the daemon (server-side; the browser never talks to the daemon directly).
+The HTTP server is deliberately LAN-reachable: it carries the website,
+and it exposes nothing the old PHP site did not already offer the LAN.
 
 The overall design and roadmap live in `notes/plan.md`. Read that first.
 
@@ -117,9 +121,9 @@ merged history keeps its shape.
 - **Any Debian 13 environment (packaging):** `.deb`s for amd64, arm64
   and armhf build via `service/setup-build.sh` + `service/build-deb.sh`
   (native, or Debian-multiarch cross on an amd64 host — no Docker, no
-  emulation, no sysroots) and `deploy/build-website-deb.sh`; the GitHub
-  release workflow runs the same scripts on public runners, and
-  publishing a release is the only thing that builds .debs.
+  emulation, no sysroots); the GitHub release workflow runs the same
+  scripts on public runners, and publishing a release is the only thing
+  that builds .debs.
 - **muzak — the radio (target only):** a Pi 4 (1 GB, arm64 Raspberry Pi
   OS trixie) with the studio speakers on a USB DAC; reachable over SSH
   as root for installing .debs and reading logs (see
@@ -127,19 +131,22 @@ merged history keeps its shape.
   develop or build on it (1 GB), and treat the speakers as live:
   conservative ceilings and volumes for any audible test.
 
-### PHP (`website/`)
+### Website (`service/web/`)
 
-- Plain PHP, no framework. Start functional and unstyled; iterate on looks
-  later.
-- All calls to the daemon happen server-side against `127.0.0.1`.
+- Server-rendered minijinja templates + vendored HTMX; no build
+  toolchain, no framework, and plain no-JS forms must keep working
+  (POST-redirect-GET).
+- Iterate with `cargo run -- --sink null --web-dir service/web`:
+  templates and assets are read from disk per request — edit, reload,
+  no recompile. Release builds embed them in the binary.
+- The page must stay a working PWA at the origin `http://<host>/`
+  (port 80): installed home-screen icons are bound to that origin.
 
 ## Directory layout
 
-Monorepo with the two components as top-level directories:
-
 ```
-service/   Rust daemon (the binary is named radiod)
-website/   PHP website
-notes/     long-lived notes and the overall plan
-plans/     per-step implementation plans (YYYYMMDD-NN-slug.md)
+service/       Rust daemon (the binary is named radiod)
+service/web/   website templates + static assets (embedded at build time)
+notes/         long-lived notes and the overall plan
+plans/         per-step implementation plans (YYYYMMDD-NN-slug.md)
 ```

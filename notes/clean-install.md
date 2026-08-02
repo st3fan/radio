@@ -8,21 +8,26 @@ package overlay. Findings from that install; the packages came from
 ## The short version
 
 ```
-scp radiod_<v>_arm64.deb radio-website_<v>_all.deb root@<host>:
+scp radiod_<v>_arm64.deb root@<host>:
 ssh root@<host>
-apt install ./radiod_<v>_arm64.deb ./radio-website_<v>_all.deb
+apt install ./radiod_<v>_arm64.deb
 # then: edit /etc/radio/config.toml (see below) and
 systemctl restart radiod
 ```
 
+(Historical note: through v0.2.0 there was a second package,
+`radio-website_all.deb`, carrying a PHP site on lighttpd + php-fpm; the
+website now lives inside radiod, which Conflicts/Replaces the old
+package. On a box upgraded from that era, `apt purge lighttpd
+php8.4-fpm php-common` reclaims the idle web stack.)
+
 ## Do the dependencies resolve? Yes.
 
 Every pinned Depends (`libavformat61`, `libavcodec61`, `libavutil59`,
-`libswresample5`, `libasound2t64`, `libc6`; lighttpd/php for the
-website) exists on Raspberry Pi OS trixie arm64 under exactly the
-Debian names — arm64 RPi OS *is* Debian trixie, so nothing to translate.
-The website postinst wired its php-fpm pool for PHP 8.4 (trixie's
-version) without help, and lighttpd served on port 80 immediately.
+`libswresample5`, `libasound2t64`, `libc6`, and `avahi-daemon` via
+Recommends) exists on Raspberry Pi OS trixie arm64 under exactly the
+Debian names — arm64 RPi OS *is* Debian trixie, so nothing to
+translate.
 
 One eyebrow-raiser: Debian's `libavcodec61` drags in a ~100-package
 closure — Mesa, LLVM, X11/Wayland client libs, VA-API, every codec —
