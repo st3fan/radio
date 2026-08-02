@@ -46,6 +46,12 @@
 {# The art box is also the layout anchor: same size whether artwork,
    AirPlay or standby — the top section never jumps. #}
 {% if airplay_active %}
+{# Sender-pushed cover art when we have it — same markup as the SomaFM
+   artwork, so the phosphor treatment applies; the airwaves mark is the
+   no-artwork state. #}
+{% if airplay_artwork %}
+<div class="art"><img src="{{ airplay_artwork }}" alt=""></div>
+{% else %}
 <div class="art airwaves" aria-hidden="true">
 <svg viewBox="0 0 96 96" xmlns="http://www.w3.org/2000/svg">
 <g fill="none" stroke="currentColor" stroke-width="2">
@@ -57,6 +63,7 @@
 <circle cx="48" cy="48" r="4" fill="currentColor"/>
 </svg>
 </div>
+{% endif %}
 {% else %}
 <div class="art{% if not now_image %} empty{% endif %}"><img src="{{ now_image or "https://somafm.com/img3/LoneDJsquare400.jpg" }}" alt=""></div>
 {% endif %}

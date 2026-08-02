@@ -25,6 +25,28 @@ pub struct AirplayInfo {
     pub channels: u16,
 }
 
+/// Now-playing metadata pushed by the AirPlay sender (DMAP). Each event
+/// from the library is a complete statement, so this is replaced
+/// wholesale — absent fields mean the sender sent none.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AirplayTrack {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+}
+
+/// The latest cover art from the AirPlay sender, exactly as sent. The
+/// bytes are shared, not copied — `Status` is cloned on every state
+/// sample and artwork runs ~180 KB per track.
+#[derive(Debug, Clone)]
+pub struct AirplayArtwork {
+    pub content_type: String,
+    pub data: std::sync::Arc<Vec<u8>>,
+    /// Monotonic per process; the cache-buster in the artwork URL, so a
+    /// track change is a new URL and an unchanged poll is a cache hit.
+    pub version: u64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Status {
     pub state: State,
@@ -46,6 +68,14 @@ pub struct Status {
     /// Session state, not part of the API contract.
     #[serde(skip)]
     pub airplay_gain: f32,
+    /// Sender-pushed track metadata; session state for the website,
+    /// not part of the API contract.
+    #[serde(skip)]
+    pub airplay_track: Option<AirplayTrack>,
+    /// Sender-pushed cover art, served at /airplay/artwork; session
+    /// state for the website, not part of the API contract.
+    #[serde(skip)]
+    pub airplay_artwork: Option<AirplayArtwork>,
 }
 
 impl Status {
@@ -62,6 +92,8 @@ impl Status {
             source: AudioSource::Radio,
             airplay: None,
             airplay_gain: 1.0,
+            airplay_track: None,
+            airplay_artwork: None,
         }
     }
 }

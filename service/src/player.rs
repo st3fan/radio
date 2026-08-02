@@ -300,6 +300,10 @@ fn end_airplay(remembered: Option<Station>, status: &Mutex<Status>, resume_radio
         status.source = AudioSource::Radio;
         status.airplay = None;
         status.airplay_gain = 1.0;
+        // The library sends no clear events at teardown — dropping the
+        // sender's now-playing state is our job.
+        status.airplay_track = None;
+        status.airplay_artwork = None;
     }
     match remembered {
         Some(station) if resume_radio => Session::Playing(station),
@@ -360,6 +364,8 @@ fn play(
         status.state = State::Playing;
         status.source = AudioSource::Radio;
         status.airplay = None;
+        status.airplay_track = None;
+        status.airplay_artwork = None;
         status.playlist_url = Some(station.playlist_url.clone());
         status.stream_url = Some(station.stream_url.clone());
         status.icy_title = None;
@@ -525,6 +531,8 @@ fn set_stopped(status: &Mutex<Status>) {
     status.source = AudioSource::Radio;
     status.airplay = None;
     status.airplay_gain = 1.0;
+    status.airplay_track = None;
+    status.airplay_artwork = None;
 }
 
 /// Paused keeps the station URLs visible — that is the difference from

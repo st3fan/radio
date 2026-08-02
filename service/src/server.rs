@@ -240,6 +240,12 @@ async fn handle(
             crate::web::Reply::Asset(content_type, bytes) => {
                 respond_cached(200, content_type, bytes, "no-cache")
             }
+            // Cover art is fetched by a versioned URL (?v=N): a track
+            // change is a new URL, so a short max-age makes the 2.5 s
+            // polls free without ever pinning stale art for long.
+            crate::web::Reply::Artwork(content_type, bytes) => {
+                respond_cached(200, content_type, bytes, "private, max-age=300")
+            }
             crate::web::Reply::NotFound => respond(
                 404,
                 "application/json",
@@ -1152,6 +1158,65 @@ mod tests {
         };
         assert!(html.contains("SOMAFM TUNER"));
         assert!(html.contains("STANDBY"));
+    }
+
+    #[tokio::test]
+    async fn airplay_metadata_and_artwork_reach_the_page() {
+        let app = test_app(ok_resolver());
+        let (_bridge_sink, source) = crate::airplay::bridge(44100, 2);
+        app.player.send(Command::AirplayStarted { source });
+        for _ in 0..500 {
+            if app.status.lock().unwrap().source == crate::status::AudioSource::Airplay {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        // What the event task writes when the sender pushes DMAP + art.
+        {
+            let mut status = app.status.lock().unwrap();
+            status.airplay_track = Some(crate::status::AirplayTrack {
+                title: Some("Ambient Excursion".to_string()),
+                artist: Some("Test Artist".to_string()),
+                album: Some("Test Album".to_string()),
+            });
+            status.airplay_artwork = Some(crate::status::AirplayArtwork {
+                content_type: "image/jpeg".to_string(),
+                data: Arc::new(vec![0xff, 0xd8, 0xff]),
+                version: 7,
+            });
+        }
+
+        let crate::web::Reply::Html(_, html) = web(&Method::GET, "/", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        // Real metadata replaces the placeholders; the artwork replaces
+        // the wave mark. (Slash-free assertions: minijinja escapes "/".)
+        assert!(html.contains("Ambient Excursion"));
+        assert!(html.contains("Test Artist — Test Album"));
+        assert!(!html.contains("NO TRACK INFO"));
+        assert!(html.contains("artwork?v=7"));
+        assert!(!html.contains("airwaves"));
+
+        let crate::web::Reply::Artwork(content_type, bytes) =
+            web(&Method::GET, "/airplay/artwork", None, "", false, &app).await
+        else {
+            panic!("expected artwork");
+        };
+        assert_eq!(content_type, "image/jpeg");
+        assert_eq!(bytes, vec![0xff, 0xd8, 0xff]);
+
+        // Outside a session the endpoint has nothing current to serve.
+        web(&Method::POST, "/", None, "action=stop", false, &app).await;
+        wait_for_state(&app, State::Stopped);
+        assert!(matches!(
+            web(&Method::GET, "/airplay/artwork", None, "", false, &app).await,
+            crate::web::Reply::NotFound
+        ));
+        // And the session's now-playing state went with it.
+        let status = app.status.lock().unwrap();
+        assert!(status.airplay_track.is_none());
+        assert!(status.airplay_artwork.is_none());
     }
 
     #[tokio::test]

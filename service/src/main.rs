@@ -245,6 +245,9 @@ async fn main() -> ExitCode {
         let event_player = player.clone();
         let event_status = status.clone();
         tokio::spawn(async move {
+            // Never reset, even by an artwork clear: an old version must
+            // not come back as a different track's URL.
+            let mut artwork_version: u64 = 0;
             while let Some(event) = events_rx.recv().await {
                 match event {
                     // Volume is shared state, not a command: slider drags
@@ -258,11 +261,56 @@ async fn main() -> ExitCode {
                             .expect("status lock poisoned")
                             .airplay_gain = airplay::db_to_gain(db);
                     }
+                    // Each Metadata event is a complete statement, not a
+                    // delta: replace wholesale. Senders repeat themselves
+                    // (2–5× per track observed), so equality-check before
+                    // touching the shared status.
+                    openairplay2::Event::Metadata {
+                        title,
+                        artist,
+                        album,
+                    } => {
+                        let track = (title.is_some() || artist.is_some() || album.is_some())
+                            .then_some(status::AirplayTrack {
+                                title,
+                                artist,
+                                album,
+                            });
+                        let mut status = event_status.lock().expect("status lock poisoned");
+                        if status.airplay_track != track {
+                            status.airplay_track = track;
+                        }
+                    }
+                    // Artwork comes exactly as sent; empty data is the
+                    // sender clearing it (image/none, seen mid-session at
+                    // track transitions).
+                    openairplay2::Event::Artwork { content_type, data } => {
+                        let mut status = event_status.lock().expect("status lock poisoned");
+                        status.airplay_artwork = if data.is_empty() {
+                            None
+                        } else {
+                            artwork_version += 1;
+                            Some(status::AirplayArtwork {
+                                content_type,
+                                data: Arc::new(data),
+                                version: artwork_version,
+                            })
+                        };
+                    }
                     openairplay2::Event::SessionEnded => {
                         event_player.send(player::Command::AirplayEnded);
                     }
-                    // SessionStarted is redundant with the sink factory;
-                    // pause/flush are already handled inside the library.
+                    // The playback side of SessionStarted is redundant with
+                    // the sink factory, but this is the ordered place to
+                    // drop the previous session's now-playing state: the
+                    // event channel is FIFO, so the clear can never race
+                    // past the new session's metadata replay.
+                    openairplay2::Event::SessionStarted { .. } => {
+                        let mut status = event_status.lock().expect("status lock poisoned");
+                        status.airplay_track = None;
+                        status.airplay_artwork = None;
+                    }
+                    // Pause/flush are already handled inside the library.
                     _ => {}
                 }
             }
