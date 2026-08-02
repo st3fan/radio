@@ -37,7 +37,12 @@ Two components, shipped as two Debian packages:
 attaches `radiod_<version>_{amd64,arm64,armhf}.deb`,
 `radio-website_<version>_all.deb` and a `SHA256SUMS` file — built on
 public runners inside `debian:trixie` containers by the same scripts
-used locally.
+used locally. Every `.deb` carries a signed build-provenance
+attestation; verify a download with:
+
+```
+gh attestation verify radiod_<version>_<arch>.deb --repo st3fan/radio
+```
 
 **Local builds**, on any Debian 13 environment (see `service/README.md`
 for details):
