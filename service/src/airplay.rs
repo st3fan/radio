@@ -138,15 +138,21 @@ impl Source for AirplaySource {
     }
 }
 
-/// Maps an AirPlay volume (dB, 0 = full scale, −144 = mute) onto a gain
-/// factor in `[0, 1]`, multiplied into the pipeline gain while an AirPlay
-/// session is active. Values are clamped: nothing the sender says can
-/// amplify.
+/// Maps an AirPlay volume onto a gain factor in `[0, 1]`, multiplied into
+/// the pipeline gain while an AirPlay session is active.
+///
+/// The protocol encodes the sender's *slider position* as −30..0 "dB"
+/// (bottom..top), with −144 meaning mute. Treating those numbers as
+/// literal amplitude dB puts a mid slider at 18 % amplitude — audibly far
+/// below the website's mid volume — so the position maps linearly onto
+/// the same amplitude scale the website volume uses: a full slider equals
+/// the radio's loudness at the same master volume, a mid slider sits 6 dB
+/// under it. Clamped: nothing the sender says can amplify.
 pub fn db_to_gain(db: f32) -> f32 {
     if db <= -144.0 || db.is_nan() {
         return 0.0;
     }
-    10f32.powf(db / 20.0).clamp(0.0, 1.0)
+    ((db + 30.0) / 30.0).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
@@ -211,18 +217,22 @@ mod tests {
     }
 
     #[test]
-    fn db_mapping_covers_the_airplay_range() {
+    fn db_mapping_treats_the_value_as_a_slider_position() {
+        // -30..0 is the slider's travel, bottom..top, mapped linearly onto
+        // amplitude so it feels like the website's volume scale.
         assert_eq!(db_to_gain(0.0), 1.0);
+        assert_eq!(db_to_gain(-30.0), 0.0);
+        assert_eq!(db_to_gain(-15.0), 0.5);
         assert_eq!(db_to_gain(-144.0), 0.0);
         assert_eq!(db_to_gain(-1000.0), 0.0);
         assert_eq!(db_to_gain(f32::NAN), 0.0);
-        let g = db_to_gain(-20.0);
-        assert!((g - 0.1).abs() < 1e-4, "-20 dB -> {g}");
+        // Below the slider range but above mute: clamp to silence.
+        assert_eq!(db_to_gain(-60.0), 0.0);
         // Positive dB must never amplify.
         assert_eq!(db_to_gain(6.0), 1.0);
-        // Monotonic over the usable range.
+        // Monotonic over the slider range.
         let mut previous = 0.0;
-        for db in (-144..=0).step_by(4) {
+        for db in -30..=0 {
             let g = db_to_gain(db as f32);
             assert!(g >= previous);
             previous = g;
