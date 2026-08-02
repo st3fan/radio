@@ -12,6 +12,14 @@
 <meta name="apple-mobile-web-app-title" content="RADIO">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<script>
+/* Restore the phosphor before first paint (see the "t" easter egg). */
+(function () {
+    var theme = null;
+    try { theme = localStorage.getItem("radio-theme"); } catch (e) {}
+    if (theme && theme !== "green") { document.documentElement.dataset.theme = theme; }
+})();
+</script>
 </head>
 <body>
 
@@ -103,6 +111,23 @@ VOL [{% for i in range(1, 21) %}<button class="seg" name="volume" value="{{ i * 
 /* The blinking cursor doubles as the "updates are alive" indicator. */
 document.body.addEventListener("htmx:afterOnLoad", function () { document.body.classList.add("live"); });
 document.body.addEventListener("htmx:sendError", function () { document.body.classList.remove("live"); });
+
+/* Easter egg: "t" cycles the tube through the phosphors a CRT actually
+   came in. Sticky via localStorage; the poll never touches <html>, so
+   the theme survives every swap. */
+(function () {
+    var THEMES = ["green", "amber", "white", "blue"];
+    document.addEventListener("keydown", function (e) {
+        if (e.key !== "t" || e.metaKey || e.ctrlKey || e.altKey) { return; }
+        var tag = (e.target.tagName || "").toLowerCase();
+        if (tag === "input" || tag === "textarea") { return; }
+        var current = document.documentElement.dataset.theme || "green";
+        var next = THEMES[(THEMES.indexOf(current) + 1) % THEMES.length];
+        if (next === "green") { delete document.documentElement.dataset.theme; }
+        else { document.documentElement.dataset.theme = next; }
+        try { localStorage.setItem("radio-theme", next); } catch (e2) {}
+    });
+})();
 </script>
 
 </body>

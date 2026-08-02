@@ -11,6 +11,35 @@
     --glow: 0 0 6px rgba(53, 224, 107, 0.35);
 }
 
+/* The "t" easter egg cycles the tube: green (default), amber, white,
+   blue — all phosphors a CRT actually shipped with. */
+html[data-theme="amber"] {
+    --ground: #080503;
+    --phosphor: #ffb000;
+    --dim: #a87400;
+    --bright: #ffd75e;
+    --grid: #3b2a12;
+    --glow: 0 0 6px rgba(255, 176, 0, 0.35);
+}
+
+html[data-theme="white"] {
+    --ground: #060606;
+    --phosphor: #d0d0d0;
+    --dim: #8c8c8c;
+    --bright: #ffffff;
+    --grid: #2e2e2e;
+    --glow: 0 0 6px rgba(220, 220, 220, 0.3);
+}
+
+html[data-theme="blue"] {
+    --ground: #03050a;
+    --phosphor: #5ab2ff;
+    --dim: #2f6fae;
+    --bright: #c2e3ff;
+    --grid: #122b42;
+    --glow: 0 0 6px rgba(90, 178, 255, 0.35);
+}
+
 * { box-sizing: border-box; }
 
 html { background: var(--ground); }
@@ -84,7 +113,7 @@ body::after {
     width: 96px;
     height: 96px;
     border: 1px solid var(--grid);
-    background: rgba(18, 59, 32, 0.25);
+    background: color-mix(in srgb, var(--grid) 25%, transparent);
 }
 
 .now .art img {
@@ -100,6 +129,20 @@ body::after {
 
 /* Standby: SomaFM's lone DJ holds the frame, dimmed like an idle tube. */
 .now .art.empty img { opacity: 0.55; }
+
+/* The artwork glows in whatever phosphor the tube is running. */
+html[data-theme="amber"] .now .art img {
+    filter: grayscale(1) sepia(1) saturate(1.8) brightness(0.9) contrast(1.05);
+}
+
+html[data-theme="white"] .now .art img {
+    filter: grayscale(1) brightness(0.95) contrast(1.05);
+}
+
+html[data-theme="blue"] .now .art img {
+    filter: grayscale(1) sepia(1) hue-rotate(160deg) saturate(1.8)
+        brightness(0.85) contrast(1.05);
+}
 
 .now .nowtext { flex: 1; min-width: 0; }
 
