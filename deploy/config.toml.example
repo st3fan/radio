@@ -10,8 +10,12 @@ audio_device = "plughw:0,0"
 # the radio should not be reachable from the LAN.
 listen = "0.0.0.0:80"
 
-# The volume at startup (0-100).
+# The first-boot volume (0-100). Once running, the radio remembers its
+# volume across restarts, reboots and reinstalls (state.toml in the
+# systemd state directory); this value only applies when no saved state
+# exists.
 #initial_volume = 50
+#state_path = "/var/lib/radiod/state.toml"
 
 # The hardware output ceiling — the speaker protection. radiod sets this
 # mixer control to the ceiling at startup and re-asserts it whenever

@@ -67,9 +67,13 @@ impl Default for AirplayConfig {
 pub struct Config {
     pub listen: SocketAddr,
     pub audio_device: String,
+    /// The first-boot volume; a saved state file overrides it.
     pub initial_volume: u8,
     pub mixer: Option<MixerConfig>,
     pub airplay: AirplayConfig,
+    /// Where runtime settings persist (state, not config — the default
+    /// lives in the systemd StateDirectory).
+    pub state_path: std::path::PathBuf,
 }
 
 impl Default for Config {
@@ -80,6 +84,7 @@ impl Default for Config {
             initial_volume: DEFAULT_INITIAL_VOLUME,
             mixer: None,
             airplay: AirplayConfig::default(),
+            state_path: std::path::PathBuf::from("/var/lib/radiod/state.toml"),
         }
     }
 }
@@ -115,6 +120,7 @@ struct RawConfig {
     initial_volume: Option<u8>,
     mixer: Option<RawMixerConfig>,
     airplay: Option<RawAirplayConfig>,
+    state_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -210,6 +216,10 @@ impl Config {
             initial_volume,
             mixer,
             airplay,
+            state_path: raw
+                .state_path
+                .map(std::path::PathBuf::from)
+                .unwrap_or(defaults.state_path),
         })
     }
 
@@ -346,6 +356,20 @@ mod tests {
             Config::from_toml("[mixer]\ncontrol = \"PCM\"\nceiling_db = inf"),
             Err(ConfigError::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn state_path_defaults_and_overrides() {
+        let config = Config::from_toml("").unwrap();
+        assert_eq!(
+            config.state_path,
+            std::path::PathBuf::from("/var/lib/radiod/state.toml")
+        );
+        let config = Config::from_toml("state_path = \"/tmp/dev-state.toml\"").unwrap();
+        assert_eq!(
+            config.state_path,
+            std::path::PathBuf::from("/tmp/dev-state.toml")
+        );
     }
 
     #[test]

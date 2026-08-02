@@ -8,6 +8,7 @@ mod pls;
 mod server;
 mod sink;
 mod source;
+mod state;
 mod status;
 mod volume;
 mod web;
@@ -153,13 +154,24 @@ async fn main() -> ExitCode {
         }
     };
 
-    let config = match load_config(&args) {
+    let mut config = match load_config(&args) {
         Ok(config) => config,
         Err(err) => {
             eprintln!("radiod: {err}");
             return ExitCode::FAILURE;
         }
     };
+
+    // Saved settings win over config defaults: the radio remembers its
+    // volume across restarts, reboots and reinstalls.
+    let saved_state = state::load(&config.state_path);
+    if let Some(volume) = saved_state.and_then(|s| s.volume) {
+        println!(
+            "radiod: state: restored volume {volume} from {}",
+            config.state_path.display()
+        );
+        config.initial_volume = volume;
+    }
 
     let sink = match make_sink(&args, &config) {
         Ok(sink) => sink,
@@ -276,6 +288,14 @@ async fn main() -> ExitCode {
         web: Arc::new(web::Web::new(args.web_dir.clone())),
     });
 
+    state::spawn_saver(
+        config.state_path.clone(),
+        status.clone(),
+        state::PersistedState {
+            volume: Some(config.initial_volume),
+        },
+    );
+
     println!(
         "radiod {} listening on http://{}",
         env!("CARGO_PKG_VERSION"),
@@ -300,6 +320,7 @@ async fn main() -> ExitCode {
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    state::save_now(&config.state_path, &status);
     ExitCode::SUCCESS
 }
 
