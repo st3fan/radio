@@ -469,8 +469,12 @@ async fn render_page(app: &App, error: Option<String>, sort: Option<Sort>) -> Re
         };
         let mut title = status.icy_title.clone().unwrap_or_default();
         let mut title_dim = false;
-        if title.is_empty() && airplay_active {
+        if airplay_active && title.is_empty() {
             title = "— AIRPLAY —".to_string();
+        } else if status.state == State::Paused {
+            // Stopped-but-remembered: the song is gone, the station is
+            // kept — just the cursor blinking on an empty line.
+            title = String::new();
         } else if title.is_empty() && status.state == State::Stopped {
             title = "— NO SIGNAL —".to_string();
             title_dim = true;

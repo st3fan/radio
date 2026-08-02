@@ -318,6 +318,16 @@ footer {
     text-decoration: underline;
 }
 
+/* ---- the transport + volume line ---- */
+
+.volline {
+    display: flex;
+    gap: 12px;
+    align-items: baseline;
+}
+
+.volline form { display: inline; }
+
 /* ---- the clickable volume bar ---- */
 
 .volbar .seg {

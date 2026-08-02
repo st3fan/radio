@@ -848,6 +848,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn website_transport_button_stops_and_replays_the_station() {
+        let app = test_app(ok_resolver());
+        // Fresh boot: nothing to stop, nothing remembered to play.
+        let crate::web::Reply::Html(_, html) = web(&Method::GET, "/", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        assert!(!html.contains(r#"value="pause">[STOP]"#));
+        assert!(!html.contains(r#"value="resume">[PLAY]"#));
+
+        web(
+            &Method::POST,
+            "/",
+            None,
+            "action=play&channel=groovesalad",
+            false,
+            &app,
+        )
+        .await;
+        wait_for_state(&app, State::Playing);
+        {
+            let mut status = app.status.lock().unwrap();
+            status.icy_title = Some("Some Song".to_string());
+        }
+        let crate::web::Reply::Html(_, html) = web(&Method::GET, "/", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        assert!(html.contains(r#"value="pause">[STOP]"#));
+        assert!(html.contains("Some Song"));
+
+        // STOP: station remembered, song title replaced by the bare
+        // blinking cursor, prompt flips to PAUSED, button flips to PLAY.
+        web(&Method::POST, "/", None, "action=pause", false, &app).await;
+        wait_for_state(&app, State::Paused);
+        let crate::web::Reply::Html(_, html) = web(&Method::GET, "/", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        assert!(html.contains("PAUSED"));
+        assert!(html.contains(r#"value="resume">[PLAY]"#));
+        assert!(!html.contains("Some Song"), "song title gone while stopped");
+        assert!(
+            html.contains(r#"<h1 class="title"><span class="cursor""#),
+            "empty title line keeps the cursor"
+        );
+
+        // PLAY: the remembered station reconnects.
+        web(&Method::POST, "/", None, "action=resume", false, &app).await;
+        wait_for_state(&app, State::Playing);
+        assert_eq!(
+            app.status.lock().unwrap().playlist_url.as_deref(),
+            Some("https://api.somafm.com/groovesalad130.pls")
+        );
+
+        web(&Method::POST, "/", None, "action=stop", false, &app).await;
+        wait_for_state(&app, State::Stopped);
+    }
+
+    #[tokio::test]
     async fn website_shows_artwork_for_the_playing_station_only() {
         let app = test_app(ok_resolver());
         // Standby: the art box renders as an empty frame, no image.
