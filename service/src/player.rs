@@ -54,8 +54,6 @@ pub enum Command {
     },
     /// The AirPlay session is over (TEARDOWN / connection closed).
     AirplayEnded,
-    /// The sender's volume slider, already mapped to a gain factor.
-    AirplayVolume(f32),
 }
 
 /// What is (or was) playing. Kept across pause so resume can reconnect.
@@ -292,10 +290,6 @@ fn transition(
             // The session already ended through the bridge (EOF); ignore.
             other => other,
         },
-        Command::AirplayVolume(gain) => {
-            status.lock().expect("status lock poisoned").airplay_gain = gain.clamp(0.0, 1.0);
-            session
-        }
     }
 }
 
@@ -1261,8 +1255,10 @@ mod tests {
         let player = spawn(status.clone(), Box::new(sink.clone()), sine_factory());
 
         let mut bridge_sink = start_airplay(&player, &status);
-        player.send(Command::AirplayVolume(0.1));
-        wait_for(|| (status.lock().unwrap().airplay_gain - 0.1).abs() < 1e-6);
+        // Sender volume is shared state (set by the event task in
+        // production), read by the playback loop per chunk — a slider
+        // drag must not interrupt the session.
+        status.lock().unwrap().airplay_gain = 0.1;
 
         let mark = sink.samples.lock().unwrap().len();
         bridge_sink.write(&[i16::MAX; 2048]);

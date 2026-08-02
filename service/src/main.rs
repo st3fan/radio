@@ -218,11 +218,20 @@ async fn main() -> ExitCode {
         };
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
         let event_player = player.clone();
+        let event_status = status.clone();
         tokio::spawn(async move {
             while let Some(event) = events_rx.recv().await {
                 match event {
+                    // Volume is shared state, not a command: slider drags
+                    // arrive as event bursts, and a command would interrupt
+                    // the playback loop (tearing down and reopening ALSA)
+                    // for every step. The loop reads the gain per chunk,
+                    // exactly like the website's master volume.
                     openairplay2::Event::Volume { db } => {
-                        event_player.send(player::Command::AirplayVolume(airplay::db_to_gain(db)))
+                        event_status
+                            .lock()
+                            .expect("status lock poisoned")
+                            .airplay_gain = airplay::db_to_gain(db);
                     }
                     openairplay2::Event::SessionEnded => {
                         event_player.send(player::Command::AirplayEnded);
