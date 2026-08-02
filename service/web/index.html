@@ -24,7 +24,7 @@
 <body>
 
 <header class="term-head">
-<a class="quiet" href="https://github.com/st3fan/radio/releases/tag/v{{ version }}">RADIO {{ version }}</a>
+{% if dev_hash %}<a class="quiet" href="https://github.com/st3fan/radio/commit/{{ dev_hash }}">RADIO DEV ({{ dev_hash }})</a>{% else %}<a class="quiet" href="https://github.com/st3fan/radio/releases/tag/v{{ version }}">RADIO {{ version }}</a>{% endif %}
 <span class="dim">SOMAFM TUNER</span>
 </header>
 

@@ -755,9 +755,11 @@ mod tests {
         };
         assert_eq!(code, 200);
         assert!(html.contains("SOMAFM TUNER"));
-        // The banner names the running version and links to its release.
-        assert!(html.contains(&format!("RADIO {}", env!("CARGO_PKG_VERSION"))));
-        assert!(html.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))));
+        // Test builds are dev builds by definition: the banner names the
+        // commit, not the version (release builds set RADIOD_RELEASE_BUILD
+        // and show RADIO <version> — exercised by the release itself).
+        assert!(html.contains("RADIO DEV ("));
+        assert!(html.contains(env!("RADIOD_DEV_HASH")));
         assert!(html.contains("— NO SIGNAL —"));
         assert!(html.contains("STANDBY"));
         // Channels from the injected fetcher, sorted by listeners.
