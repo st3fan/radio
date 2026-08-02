@@ -1,15 +1,16 @@
 # Radio
 
-An internet radio for a small ARM board (an arm64 Raspberry Pi or an
-ARMv7 Banana Pi) connected to studio speakers: pick a SomaFM channel in
-the browser, music comes out of the speakers.
+An internet radio **and AirPlay speaker** for a small ARM board (an
+arm64 Raspberry Pi or an ARMv7 Banana Pi) connected to studio speakers:
+pick a SomaFM channel in the browser — or pick "Radio" in any Apple
+device's AirPlay list — and music comes out of the speakers.
 
 ```
 browser (LAN) ──▶ lighttpd + php-fpm (website, port 80)
                         │ loopback HTTP API
                         ▼
-                  radiod (Rust daemon)
-                        │ libavformat/libavcodec/libswresample
+Mac / iPhone ────▶ radiod (Rust daemon)
+  (AirPlay 2)           │ libavformat/libavcodec/libswresample · openairplay2
                         ▼
                   ALSA ──▶ USB speakers
 ```
@@ -19,11 +20,16 @@ Two components, shipped as two Debian packages:
 - **`radiod`** (`service/`) — Rust daemon: streams and decodes the icecast
   stream in-process via the FFmpeg libraries, plays to ALSA, exposes a
   loopback-only HTTP API (`/play`, `/stop`, `/pause`, `/resume`,
-  `/volume`, `/mute`, `/unmute`, `/status` with live ICY song titles).
-  The output level is **hard-capped** by the `max_volume` setting —
-  requests are percentages of that cap, so it cannot be exceeded.
+  `/volume`, `/mute`, `/unmute`, `/status` with live ICY song titles) —
+  and embeds an **AirPlay 2 receiver**
+  ([openairplay2](https://github.com/st3fan/openairplay2)): an AirPlay
+  session preempts the radio, the station resumes when it ends, and the
+  sender's volume slider behaves like the website's. The speakers are
+  protected by a **hardware mixer ceiling** the daemon owns, asserts,
+  and re-asserts — no source, slider, or software bug can exceed it.
 - **`radio-website`** (`website/`) — plain PHP site: the SomaFM channel
-  list with artwork, playback controls, now-playing display.
+  list with artwork, playback controls, now-playing display, and an
+  AirPlay badge while a session is active.
 
 ## Getting the packages
 
