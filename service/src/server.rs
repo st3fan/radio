@@ -865,7 +865,7 @@ mod tests {
         let (defcon, groove) = order(&html);
         assert!(defcon < groove, "default is busiest-first");
         assert!(html.contains("STATION</a>"), "no indicator until clicked");
-        assert!(!html.contains(" ^<") && !html.contains(" v<"));
+        assert!(!html.contains('▴') && !html.contains('▾'));
 
         // Genre ascending flips the pair and shows the indicator; the
         // chosen sort is baked into the poll URL and form targets.
@@ -884,7 +884,7 @@ mod tests {
         let html = page(html);
         let (defcon, groove) = order(&html);
         assert!(groove < defcon, "ambient sorts before electronica");
-        assert!(html.contains("GENRE ^"));
+        assert!(html.contains("GENRE ▴"));
         assert!(html.contains("sort=genre"), "sort baked into the page");
 
         // Listeners ascending: quietest first, v/^ tracks direction.
@@ -902,7 +902,7 @@ mod tests {
         };
         let (defcon, groove) = order(&html);
         assert!(groove < defcon, "quietest first");
-        assert!(html.contains("LSNRS ^"));
+        assert!(html.contains("LSNRS ▴"));
 
         // Actions keep the chosen sort: HTMX response stays sorted, and
         // the plain-form redirect carries it.
@@ -918,7 +918,7 @@ mod tests {
         else {
             panic!("expected html");
         };
-        assert!(html.contains("GENRE ^"));
+        assert!(html.contains("GENRE ▴"));
         let crate::web::Reply::Redirect(location) = web(
             &Method::POST,
             "/",

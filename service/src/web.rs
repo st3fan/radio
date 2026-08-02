@@ -406,7 +406,7 @@ struct PageContext {
 struct ColumnHeader {
     label: &'static str,
     href: String,
-    /// "", " ^" or " v".
+    /// "", " ▴" or " ▾".
     indicator: &'static str,
     class: &'static str,
 }
@@ -429,8 +429,8 @@ fn column_headers(sort: Option<Sort>) -> Vec<ColumnHeader> {
             href: sort_query(Some(Sort { key, asc: next_asc })),
             indicator: match chosen {
                 None => "",
-                Some(Sort { asc: true, .. }) => " ^",
-                Some(Sort { asc: false, .. }) => " v",
+                Some(Sort { asc: true, .. }) => " ▴",
+                Some(Sort { asc: false, .. }) => " ▾",
             },
             class,
         }
