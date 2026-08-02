@@ -389,6 +389,8 @@ async fn action_play(app: &App, channel_id: &str) -> Result<(), String> {
 
 #[derive(Serialize)]
 struct PageContext {
+    /// Compiled-in crate version; the banner links to its release page.
+    version: &'static str,
     error: Option<String>,
     state: &'static str,
     prompt: &'static str,
@@ -508,6 +510,7 @@ async fn render_page(app: &App, error: Option<String>, sort: Option<Sort>) -> Re
             list
         });
         PageContext {
+            version: env!("CARGO_PKG_VERSION"),
             error,
             state,
             prompt,
