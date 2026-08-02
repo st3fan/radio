@@ -69,7 +69,38 @@ body::after {
 
 /* ---- now playing ---- */
 
-.now { margin: 22px 0 4px; }
+.now {
+    margin: 22px 0 4px;
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+    /* The section is size-stable: the art box anchors the height and
+       the text lines reserve their space even when empty. */
+    min-height: 104px;
+}
+
+.now .art {
+    flex: none;
+    width: 96px;
+    height: 96px;
+    border: 1px solid var(--grid);
+    background: rgba(18, 59, 32, 0.25);
+}
+
+.now .art img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    /* Phosphor tint: drain the color, then rotate sepia's amber into
+       the terminal green (--phosphor sits around hue 140). */
+    filter: grayscale(1) sepia(1) hue-rotate(90deg) saturate(1.6)
+        brightness(0.85) contrast(1.05);
+}
+
+.now .nowtext { flex: 1; min-width: 0; }
+
+.now .station { min-height: 1.6em; }
 
 .now .prompt { letter-spacing: 0.1em; }
 
@@ -101,6 +132,7 @@ body.live .now .cursor {
 }
 
 .now .station { margin-bottom: 2px; }
+.now .title { min-height: 1.35em; }
 
 .now .vol { font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 

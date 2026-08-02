@@ -848,6 +848,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn website_shows_artwork_for_the_playing_station_only() {
+        let app = test_app(ok_resolver());
+        // Standby: the art box renders as an empty frame, no image.
+        let crate::web::Reply::Html(_, html) = web(&Method::GET, "/", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        assert!(html.contains(r#"class="art empty""#));
+        assert!(!html.contains("<img"), "no artwork while stopped");
+
+        web(
+            &Method::POST,
+            "/",
+            None,
+            "action=play&channel=groovesalad",
+            false,
+            &app,
+        )
+        .await;
+        wait_for_state(&app, State::Playing);
+        let crate::web::Reply::Html(_, html) = web(&Method::GET, "/", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        // minijinja entity-escapes slashes in attributes; match on the
+        // slash-free part of the URL.
+        assert!(html.contains("groovesalad-400.jpg"), "largeimage preferred");
+        // Only in the now-playing section: exactly one image on the page.
+        assert_eq!(html.matches("<img").count(), 1);
+
+        web(&Method::POST, "/", None, "action=stop", false, &app).await;
+        wait_for_state(&app, State::Stopped);
+    }
+
+    #[tokio::test]
     async fn website_channel_sorting_is_server_side_and_sticky() {
         let app = test_app(ok_resolver());
         let page = |html: String| html;

@@ -32,6 +32,10 @@
 {% endif %}
 
 <section class="now" id="now">
+{# The art box is also the layout anchor: same size whether artwork,
+   AirPlay or standby — the top section never jumps. #}
+<div class="art{% if not now_image %} empty{% endif %}">{% if now_image %}<img src="{{ now_image }}" alt="">{% endif %}</div>
+<div class="nowtext">
 <div class="prompt dim">&gt; {{ prompt }}</div>
 <h1 class="title{% if title_dim %} dim{% endif %}">{{ title }}{% if state != "stopped" %}<span class="cursor" aria-hidden="true"></span>{% endif %}</h1>
 <div class="station">{{ icy_name }}</div>
@@ -46,6 +50,7 @@ VOL [{% for i in range(1, 21) %}<button class="seg" name="volume" value="{{ i * 
 {% if mixer_warning %}
 <div class="vol">MIXER {{ mixer_warning }}</div>
 {% endif %}
+</div>
 </section>
 
 {# Transport lives on the sender side (channel list, AirPlay device);

@@ -48,6 +48,10 @@ pub struct Channel {
     pub listeners: i64,
     #[serde(skip)]
     pub playlist_url: String,
+    /// Channel artwork (SomaFM CDN), hotlinked like the rest of the
+    /// channel data; shown only in the now-playing section.
+    #[serde(skip)]
+    pub image: String,
     /// Filled per render.
     pub is_current: bool,
 }
@@ -138,6 +142,9 @@ fn parse_channels(raw: &str) -> Option<Vec<Channel>> {
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("https://somafm.com/{id}.pls"));
             Some(Channel {
+                image: text(entry, "largeimage")
+                    .or_else(|| text(entry, "image"))
+                    .unwrap_or_default(),
                 title: text(entry, "title").unwrap_or_else(|| id.clone()),
                 description: text(entry, "description").unwrap_or_default(),
                 genre: text(entry, "genre").unwrap_or_default().replace('|', " · "),
@@ -395,6 +402,9 @@ struct PageContext {
     muted: bool,
     mixer_warning: Option<String>,
     airplay_active: bool,
+    /// Artwork of the station that is playing (or paused); None renders
+    /// the empty frame so the layout never moves.
+    now_image: Option<String>,
     channels: Option<Vec<Channel>>,
     /// "" for the default view, else "?sort=..&dir=.." — baked into the
     /// poll URL and form targets so the chosen order survives swaps.
@@ -465,6 +475,12 @@ async fn render_page(app: &App, error: Option<String>, sort: Option<Sort>) -> Re
             title = "— NO SIGNAL —".to_string();
             title_dim = true;
         }
+        let now_image = channels.as_ref().and_then(|list| {
+            let playing = status.playlist_url.as_deref()?;
+            list.iter()
+                .find(|c| c.playlist_url == playing && !c.image.is_empty())
+                .map(|c| c.image.clone())
+        });
         let channels = channels.map(|list| {
             let mut list: Vec<Channel> = list
                 .iter()
@@ -502,6 +518,7 @@ async fn render_page(app: &App, error: Option<String>, sort: Option<Sort>) -> Re
             mixer_warning: (status.mixer != "ok" && status.mixer != "disabled")
                 .then(|| status.mixer.clone()),
             airplay_active,
+            now_image,
             channels,
             sort_query: sort_query(sort),
             columns: column_headers(sort),
@@ -599,6 +616,7 @@ pub mod testing {
         Box::new(|| {
             Ok(r#"{"channels": [
                 {"id": "groovesalad", "title": "Groove Salad", "description": "chill", "genre": "ambient|electronica", "listeners": "250",
+                 "image": "https://somafm.com/img/groovesalad120.png", "largeimage": "https://somafm.com/img3/groovesalad-400.jpg",
                  "playlists": [{"url": "https://api.somafm.com/groovesalad130.pls", "format": "mp3", "quality": "highest"},
                                {"url": "https://api.somafm.com/groovesalad.pls", "format": "mp3", "quality": "high"}]},
                 {"id": "defcon", "title": "DEF CON Radio", "description": "hacking", "genre": "electronica", "listeners": "500",
