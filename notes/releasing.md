@@ -67,6 +67,19 @@ with an attribution line:
 
 > *Release done by Claude with permission of @st3fan.*
 
+## When a release build fails
+
+The tag pins the commit, so re-running a failed workflow rebuilds the
+same broken code. Unless the failure is pure infrastructure (a runner
+or docker-pull flake — those you just re-run from the run page):
+
+1. Diagnose: `gh run view <run-id> --log-failed`.
+2. Delete the failed release **and its tag**:
+   `gh release delete vX.Y.Z --cleanup-tag --yes`.
+3. Land the fix on main through a normal PR.
+4. Re-create the release — same version, same story (step 3 above);
+   the generated changelog picks up the fix PR by itself.
+
 ## Prereleases (testing the workflow itself)
 
 Tag `vX.Y.Z-rcN` with `--prerelease`, optionally `--target <branch>`;
