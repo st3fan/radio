@@ -108,11 +108,21 @@ Two models meet here; keep them separate and explicit:
 - The **website volume** (0–100 through `volume::gain`) stays the master
   software volume and applies to both sources — it is "the speaker's
   volume".
-- The **AirPlay sender's slider** (`Event::Volume { db }`) maps
-  `10^(db/20)` (with −144 dB → 0) onto a *separate* AirPlay-session gain
-  factor, multiplied into the pipeline gain only while the AirPlay source
-  is active. Both factors are ≤ 1, the never-amplify clamp still holds, and
-  the mixer ceiling caps everything in hardware regardless.
+- The **AirPlay sender's slider** (`Event::Volume { db }`) maps onto a
+  *separate* AirPlay-session gain factor, multiplied into the pipeline
+  gain only while the AirPlay source is active. Both factors are ≤ 1,
+  the never-amplify clamp still holds, and the mixer ceiling caps
+  everything in hardware regardless.
+
+  **Mapping correction (found on real hardware):** the plan originally
+  said `10^(db/20)`, treating the protocol's −30..0 range as literal
+  amplitude dB. It is really a *slider-position encoding* (bottom..top);
+  the literal reading put a mid slider at 18 % amplitude, which times
+  the master volume was "super super low" next to SomaFM. The mapping
+  is linear instead — `(db + 30)/30`, −144 → mute — putting the slider
+  on the same amplitude scale as the website volume: full slider equals
+  the radio's loudness at the same master volume, mid slider sits 6 dB
+  under it.
 - Out of scope: reflecting website volume changes back to the sender's
   slider (needs receiver→sender eventing; revisit in openairplay2).
 
