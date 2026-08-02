@@ -1220,6 +1220,112 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn favourites_toggle_with_the_playing_station() {
+        let app = test_app(ok_resolver());
+
+        // No favourites, no section.
+        let crate::web::Reply::Html(_, html) = web(&Method::GET, "/", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        assert!(!html.contains("FAVOURITES"));
+
+        // Favouriting while stopped is a quiet no-op, not an error.
+        let crate::web::Reply::Redirect(location) =
+            web(&Method::POST, "/", None, "action=favourite", false, &app).await
+        else {
+            panic!("expected redirect");
+        };
+        assert_eq!(location, "/");
+        assert!(app.status.lock().unwrap().favourites.is_empty());
+
+        // Play two stations, favouriting each: insertion order, not the
+        // channel list's listener ordering (defcon would sort first).
+        web(
+            &Method::POST,
+            "/",
+            None,
+            "action=play&channel=groovesalad",
+            false,
+            &app,
+        )
+        .await;
+        wait_for_state(&app, State::Playing);
+        web(&Method::POST, "/", None, "action=favourite", true, &app).await;
+        web(
+            &Method::POST,
+            "/",
+            None,
+            "action=play&channel=defcon",
+            false,
+            &app,
+        )
+        .await;
+        // Wait for the station switch, not just "playing" — the state is
+        // already Playing from the previous station.
+        for _ in 0..500 {
+            if app.status.lock().unwrap().playlist_url.as_deref()
+                == Some("https://somafm.com/defcon.pls")
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let crate::web::Reply::Html(_, html) =
+            web(&Method::POST, "/", None, "action=favourite", true, &app).await
+        else {
+            panic!("expected html");
+        };
+        assert!(html.contains("FAVOURITES"));
+        let favourites_section = html
+            .split_once("FAVOURITES")
+            .map(|(_, rest)| rest.split("CHANNELS").next().unwrap())
+            .unwrap();
+        assert!(favourites_section.contains("F1"));
+        assert!(favourites_section.contains("F2"));
+        let groove = favourites_section.find("Groove Salad").unwrap();
+        let defcon = favourites_section.find("DEF CON Radio").unwrap();
+        assert!(groove < defcon, "insertion order, not listener order");
+        // The playing station is marked in the favourites section too.
+        assert!(favourites_section.contains("[ON AIR]"));
+
+        // Second press removes: defcon un-favourited, groovesalad stays.
+        let crate::web::Reply::Html(_, html) =
+            web(&Method::POST, "/", None, "action=favourite", true, &app).await
+        else {
+            panic!("expected html");
+        };
+        assert!(html.contains("FAVOURITES"));
+        let favourites = app.status.lock().unwrap().favourites.clone();
+        assert_eq!(
+            favourites,
+            vec![crate::status::Favourite::somafm("groovesalad")]
+        );
+
+        // An id the channel list stops serving renders as nothing but
+        // stays on the list; an unknown source is skipped the same way.
+        {
+            let mut status = app.status.lock().unwrap();
+            status.favourites = vec![
+                crate::status::Favourite::somafm("gone-from-somafm"),
+                crate::status::Favourite {
+                    source: "icecast".to_string(),
+                    id: "x".to_string(),
+                },
+            ];
+        }
+        let crate::web::Reply::Html(_, html) = web(&Method::GET, "/", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        assert!(
+            !html.contains("FAVOURITES"),
+            "nothing resolvable, no section"
+        );
+        assert_eq!(app.status.lock().unwrap().favourites.len(), 2);
+    }
+
+    #[tokio::test]
     async fn unknown_path_is_json_404() {
         let app = test_app(ok_resolver());
         let (code, body) = route(&Method::GET, "/nope", "", &app).await;

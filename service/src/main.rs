@@ -163,14 +163,22 @@ async fn main() -> ExitCode {
     };
 
     // Saved settings win over config defaults: the radio remembers its
-    // volume across restarts, reboots and reinstalls.
+    // volume and favourites across restarts, reboots and reinstalls.
     let saved_state = state::load(&config.state_path);
-    if let Some(volume) = saved_state.and_then(|s| s.volume) {
+    if let Some(volume) = saved_state.as_ref().and_then(|s| s.volume) {
         println!(
             "radiod: state: restored volume {volume} from {}",
             config.state_path.display()
         );
         config.initial_volume = volume;
+    }
+    let saved_favourites = saved_state.and_then(|s| s.favourites).unwrap_or_default();
+    if !saved_favourites.is_empty() {
+        println!(
+            "radiod: state: restored {} favourite(s) from {}",
+            saved_favourites.len(),
+            config.state_path.display()
+        );
     }
 
     let sink = match make_sink(&args, &config) {
@@ -192,6 +200,7 @@ async fn main() -> ExitCode {
     // Assert the hardware ceiling before anything can play. Refusing to
     // start beats playing at an unknown level.
     let mut initial_status = Status::initial(&config);
+    initial_status.favourites = saved_favourites.clone();
     if let Some(mixer) = mixer.as_mut() {
         if let Err(err) = mixer.assert_ceiling() {
             eprintln!("radiod: mixer: {err}");
@@ -341,6 +350,7 @@ async fn main() -> ExitCode {
         status.clone(),
         state::PersistedState {
             volume: Some(config.initial_volume),
+            favourites: Some(saved_favourites),
         },
     );
 
