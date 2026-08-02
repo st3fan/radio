@@ -20,17 +20,19 @@
 <span class="dim">SOMAFM TUNER</span>
 </header>
 
-<div id="app">
+{# The whole app block polls every 5 s so everything converges — the
+   now-playing text AND the [ON AIR] marker in the channel table (play
+   commands are asynchronous; the response to a button press can still
+   show the previous station for a moment). The volume input carries
+   hx-preserve so a poll never clobbers half-typed input. #}
+<div id="app" hx-get="/" hx-select="#app" hx-target="this"
+     hx-swap="outerHTML" hx-trigger="every 5s">
 
 {% if error %}
 <p class="error">! ERROR: {{ error }}</p>
 {% endif %}
 
-{# The now-playing block refreshes itself every 5 s; button presses swap
-   the whole #app via hx-select, so state changes show up immediately. #}
-<section class="now" id="now"
-         hx-get="/" hx-select="#now" hx-target="this" hx-swap="outerHTML"
-         hx-trigger="every 5s">
+<section class="now" id="now">
 <div class="prompt dim">&gt; {{ prompt }}</div>
 <h1 class="title{% if title_dim %} dim{% endif %}">{{ title }}{% if state != "stopped" %}<span class="cursor" aria-hidden="true"></span>{% endif %}</h1>
 <div class="station">{{ icy_name }}</div>
@@ -68,7 +70,7 @@
 
 <form method="post" action="/" class="volform" hx-post="/" hx-target="#app" hx-select="#app" hx-swap="outerHTML">
 <label>VOL%
-<input type="number" name="volume" min="0" max="100" value="{{ volume }}">
+<input type="number" name="volume" min="0" max="100" value="{{ volume }}" id="volume-input" hx-preserve>
 </label>
 <button name="action" value="volume">[SET]</button>
 </form>

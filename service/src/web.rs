@@ -265,6 +265,10 @@ async fn handle_action(app: &App, body: &str, hx_request: bool) -> Reply {
 
     let error = result.err();
     if hx_request {
+        // Playback commands are asynchronous: give the player a moment to
+        // switch before rendering, so the swapped-in page usually shows
+        // the new state (the 5 s poll converges any stragglers).
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         render_page(app, error).await
     } else {
         match error {
