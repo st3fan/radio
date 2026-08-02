@@ -20,12 +20,12 @@
 <span class="dim">SOMAFM TUNER</span>
 </header>
 
-{# The whole app block polls every 5 s so everything converges — the
+{# The whole app block polls every 2.5 s so everything converges — the
    now-playing text AND the [ON AIR] marker in the channel table (play
    commands are asynchronous; the response to a button press can still
    show the previous station for a moment). #}
 <div id="app" hx-get="/" hx-select="#app" hx-target="this"
-     hx-swap="outerHTML" hx-trigger="every 5s">
+     hx-swap="outerHTML" hx-trigger="every 2.5s">
 
 {% if error %}
 <p class="error">! ERROR: {{ error }}</p>
