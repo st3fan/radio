@@ -25,6 +25,9 @@ jobs:
   radiod:
     name: radiod ${{ matrix.arch }}
     strategy:
+      # One leg's failure (e.g. a docker-pull flake on one runner) must not
+      # cancel the other architectures' builds.
+      fail-fast: false
       matrix:
         include:
           - arch: amd64
