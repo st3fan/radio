@@ -24,7 +24,7 @@
    now-playing text AND the [ON AIR] marker in the channel table (play
    commands are asynchronous; the response to a button press can still
    show the previous station for a moment). #}
-<div id="app" hx-get="/" hx-select="#app" hx-target="this"
+<div id="app" hx-get="/{{ sort_query }}" hx-select="#app" hx-target="this"
      hx-swap="outerHTML" hx-trigger="every 2.5s">
 
 {% if error %}
@@ -37,7 +37,7 @@
 <div class="station">{{ icy_name }}</div>
 {# The bar is the slider: twenty segment-buttons in one form, each
    submitting its position's volume; the nudge buttons share the form. #}
-<form class="vol dim volbar" method="post" action="/" hx-post="/" hx-target="#app" hx-select="#app" hx-swap="outerHTML">
+<form class="vol dim volbar" method="post" action="/{{ sort_query }}" hx-post="/{{ sort_query }}" hx-target="#app" hx-select="#app" hx-swap="outerHTML">
 <input type="hidden" name="action" value="volume">
 VOL [{% for i in range(1, 21) %}<button class="seg" name="volume" value="{{ i * 5 }}" title="volume {{ i * 5 }}">{% if i <= volume_filled %}█{% else %}░{% endif %}</button>{% endfor %}] {{ volume }}/100{% if muted %} · MUTED{% endif %}
 <button name="volume" value="{{ volume_down }}">[VOL-]</button>
@@ -65,7 +65,7 @@ VOL [{% for i in range(1, 21) %}<button class="seg" name="volume" value="{{ i * 
 <p class="error">! CHANNEL LIST UNAVAILABLE</p>
 {% else %}
 <table>
-<tr><th>CH</th><th>STATION</th><th class="col-genre">GENRE</th><th class="num">LSNRS</th><th></th></tr>
+<tr><th>CH</th>{% for col in columns %}<th{% if col.class %} class="{{ col.class }}"{% endif %}><a class="quiet" href="/{{ col.href }}" hx-get="/{{ col.href }}" hx-select="#app" hx-target="#app" hx-swap="outerHTML" hx-push-url="true">{{ col.label }}{{ col.indicator }}</a></th>{% endfor %}<th></th></tr>
 {% for channel in channels %}
 <tr{% if channel.is_current %} class="playing"{% endif %}>
 <td>{% if loop.index < 10 %}0{% endif %}{{ loop.index }}</td>
@@ -78,7 +78,7 @@ VOL [{% for i in range(1, 21) %}<button class="seg" name="volume" value="{{ i * 
 {% elif airplay_active %}
 <span class="dim">[AIRPLAY]</span>
 {% else %}
-<form method="post" action="/" hx-post="/" hx-target="#app" hx-select="#app" hx-swap="outerHTML">
+<form method="post" action="/{{ sort_query }}" hx-post="/{{ sort_query }}" hx-target="#app" hx-select="#app" hx-swap="outerHTML">
 <input type="hidden" name="channel" value="{{ channel.id }}">
 <button name="action" value="play">[PLAY]</button>
 </form>

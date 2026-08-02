@@ -848,6 +848,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn website_channel_sorting_is_server_side_and_sticky() {
+        let app = test_app(ok_resolver());
+        let page = |html: String| html;
+        let order = |html: &str| {
+            let defcon = html.find("DEF CON Radio").expect("defcon on page");
+            let groove = html.find("Groove Salad").expect("groove on page");
+            (defcon, groove)
+        };
+
+        // Default: listeners busiest-first, no indicators anywhere.
+        let crate::web::Reply::Html(_, html) = web(&Method::GET, "/", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        let (defcon, groove) = order(&html);
+        assert!(defcon < groove, "default is busiest-first");
+        assert!(html.contains("STATION</a>"), "no indicator until clicked");
+        assert!(!html.contains(" ^<") && !html.contains(" v<"));
+
+        // Genre ascending flips the pair and shows the indicator; the
+        // chosen sort is baked into the poll URL and form targets.
+        let crate::web::Reply::Html(_, html) = web(
+            &Method::GET,
+            "/",
+            Some("sort=genre&dir=asc"),
+            "",
+            false,
+            &app,
+        )
+        .await
+        else {
+            panic!("expected html");
+        };
+        let html = page(html);
+        let (defcon, groove) = order(&html);
+        assert!(groove < defcon, "ambient sorts before electronica");
+        assert!(html.contains("GENRE ^"));
+        assert!(html.contains("sort=genre"), "sort baked into the page");
+
+        // Listeners ascending: quietest first, v/^ tracks direction.
+        let crate::web::Reply::Html(_, html) = web(
+            &Method::GET,
+            "/",
+            Some("sort=listeners&dir=asc"),
+            "",
+            false,
+            &app,
+        )
+        .await
+        else {
+            panic!("expected html");
+        };
+        let (defcon, groove) = order(&html);
+        assert!(groove < defcon, "quietest first");
+        assert!(html.contains("LSNRS ^"));
+
+        // Actions keep the chosen sort: HTMX response stays sorted, and
+        // the plain-form redirect carries it.
+        let crate::web::Reply::Html(_, html) = web(
+            &Method::POST,
+            "/",
+            Some("sort=genre&dir=asc"),
+            "action=mute",
+            true,
+            &app,
+        )
+        .await
+        else {
+            panic!("expected html");
+        };
+        assert!(html.contains("GENRE ^"));
+        let crate::web::Reply::Redirect(location) = web(
+            &Method::POST,
+            "/",
+            Some("sort=genre&dir=asc"),
+            "action=unmute",
+            false,
+            &app,
+        )
+        .await
+        else {
+            panic!("expected redirect");
+        };
+        assert_eq!(location, "/?sort=genre&dir=asc");
+
+        // Nonsense params mean the default view, not an error.
+        let crate::web::Reply::Html(_, html) =
+            web(&Method::GET, "/", Some("sort=nope&dir=up"), "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        let (defcon, groove) = order(&html);
+        assert!(defcon < groove);
+    }
+
+    #[tokio::test]
     async fn website_assets_are_embedded() {
         let app = test_app(ok_resolver());
         for (path, content_type) in [

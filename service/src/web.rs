@@ -164,6 +164,71 @@ fn text_i64(value: &serde_json::Value) -> i64 {
     value.as_str().and_then(|s| s.parse().ok()).unwrap_or(0)
 }
 
+/// A chosen channel-list ordering, carried in the query string so it
+/// survives polls, actions and redirects. `None` is the default view
+/// (listeners, busiest first, no indicator).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Sort {
+    key: SortKey,
+    asc: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SortKey {
+    Station,
+    Genre,
+    Listeners,
+}
+
+impl SortKey {
+    fn name(self) -> &'static str {
+        match self {
+            SortKey::Station => "station",
+            SortKey::Genre => "genre",
+            SortKey::Listeners => "listeners",
+        }
+    }
+
+    /// The direction a column starts with when first clicked.
+    fn first_click_asc(self) -> bool {
+        !matches!(self, SortKey::Listeners)
+    }
+}
+
+fn sort_from_query(pairs: &[(String, String)]) -> Option<Sort> {
+    let value = |name: &str| {
+        pairs
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    };
+    let key = match value("sort")? {
+        "station" => SortKey::Station,
+        "genre" => SortKey::Genre,
+        "listeners" => SortKey::Listeners,
+        _ => return None,
+    };
+    let asc = match value("dir") {
+        Some("asc") => true,
+        Some("desc") => false,
+        _ => key.first_click_asc(),
+    };
+    Some(Sort { key, asc })
+}
+
+/// The query-string suffix that keeps a chosen sort alive across polls,
+/// form posts and redirects ("" for the default view).
+fn sort_query(sort: Option<Sort>) -> String {
+    match sort {
+        None => String::new(),
+        Some(sort) => format!(
+            "?sort={}&dir={}",
+            sort.key.name(),
+            if sort.asc { "asc" } else { "desc" }
+        ),
+    }
+}
+
 /// Routes a request to the website; `None` means "not a web path" and the
 /// caller falls through to the JSON API.
 pub async fn route(
@@ -174,19 +239,20 @@ pub async fn route(
     hx_request: bool,
     app: &App,
 ) -> Option<Reply> {
+    let pairs = query.map(form_pairs).unwrap_or_default();
+    let sort = sort_from_query(&pairs);
     match (method, path) {
-        (&hyper::Method::GET, "/") => Some(render_page(app, query_error(query)).await),
-        (&hyper::Method::POST, "/") => Some(handle_action(app, body, hx_request).await),
+        (&hyper::Method::GET, "/") => {
+            let error = pairs
+                .into_iter()
+                .find(|(k, _)| k == "error")
+                .map(|(_, v)| v);
+            Some(render_page(app, error, sort).await)
+        }
+        (&hyper::Method::POST, "/") => Some(handle_action(app, body, hx_request, sort).await),
         (&hyper::Method::GET, _) => serve_asset(app, path),
         _ => None,
     }
-}
-
-fn query_error(query: Option<&str>) -> Option<String> {
-    form_pairs(query?)
-        .into_iter()
-        .find(|(k, _)| k == "error")
-        .map(|(_, v)| v)
 }
 
 /// The embedded assets. `--web-dir` overrides them from disk (dev).
@@ -222,7 +288,7 @@ fn serve_asset(app: &App, path: &str) -> Option<Reply> {
 
 /// Handles a form action. Plain forms get POST-redirect-GET (a refresh
 /// never repeats an action); HTMX gets the refreshed page directly.
-async fn handle_action(app: &App, body: &str, hx_request: bool) -> Reply {
+async fn handle_action(app: &App, body: &str, hx_request: bool, sort: Option<Sort>) -> Reply {
     let form = form_pairs(body);
     let field = |name: &str| {
         form.iter()
@@ -267,13 +333,18 @@ async fn handle_action(app: &App, body: &str, hx_request: bool) -> Reply {
     if hx_request {
         // Playback commands are asynchronous: give the player a moment to
         // switch before rendering, so the swapped-in page usually shows
-        // the new state (the 5 s poll converges any stragglers).
+        // the new state (the poll converges any stragglers).
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        render_page(app, error).await
+        render_page(app, error, sort).await
     } else {
+        let base = sort_query(sort);
         match error {
-            None => Reply::Redirect("/".to_string()),
-            Some(message) => Reply::Redirect(format!("/?error={}", url_encode(&message))),
+            None if base.is_empty() => Reply::Redirect("/".to_string()),
+            None => Reply::Redirect(format!("/{base}")),
+            Some(message) => {
+                let sep = if base.is_empty() { "?" } else { "&" };
+                Reply::Redirect(format!("/{base}{sep}error={}", url_encode(&message)))
+            }
         }
     }
 }
@@ -325,9 +396,49 @@ struct PageContext {
     mixer_warning: Option<String>,
     airplay_active: bool,
     channels: Option<Vec<Channel>>,
+    /// "" for the default view, else "?sort=..&dir=.." — baked into the
+    /// poll URL and form targets so the chosen order survives swaps.
+    sort_query: String,
+    columns: Vec<ColumnHeader>,
 }
 
-async fn render_page(app: &App, error: Option<String>) -> Reply {
+#[derive(Serialize)]
+struct ColumnHeader {
+    label: &'static str,
+    href: String,
+    /// "", " ^" or " v".
+    indicator: &'static str,
+    class: &'static str,
+}
+
+fn column_headers(sort: Option<Sort>) -> Vec<ColumnHeader> {
+    [
+        (SortKey::Station, "STATION", ""),
+        (SortKey::Genre, "GENRE", "col-genre"),
+        (SortKey::Listeners, "LSNRS", "num"),
+    ]
+    .into_iter()
+    .map(|(key, label, class)| {
+        let chosen = sort.filter(|s| s.key == key);
+        let next_asc = match chosen {
+            Some(sort) => !sort.asc,
+            None => key.first_click_asc(),
+        };
+        ColumnHeader {
+            label,
+            href: sort_query(Some(Sort { key, asc: next_asc })),
+            indicator: match chosen {
+                None => "",
+                Some(Sort { asc: true, .. }) => " ^",
+                Some(Sort { asc: false, .. }) => " v",
+            },
+            class,
+        }
+    })
+    .collect()
+}
+
+async fn render_page(app: &App, error: Option<String>, sort: Option<Sort>) -> Reply {
     let channels = app.web.channels().await;
     let context = {
         let status = app.status.lock().expect("status lock poisoned");
@@ -355,14 +466,26 @@ async fn render_page(app: &App, error: Option<String>) -> Reply {
             title_dim = true;
         }
         let channels = channels.map(|list| {
-            list.iter()
+            let mut list: Vec<Channel> = list
+                .iter()
                 .map(|channel| {
                     let mut channel = channel.clone();
                     channel.is_current = !airplay_active
                         && status.playlist_url.as_deref() == Some(channel.playlist_url.as_str());
                     channel
                 })
-                .collect()
+                .collect();
+            if let Some(sort) = sort {
+                match sort.key {
+                    SortKey::Station => list.sort_by_key(|c| c.title.to_lowercase()),
+                    SortKey::Genre => list.sort_by_key(|c| c.genre.to_lowercase()),
+                    SortKey::Listeners => list.sort_by_key(|c| c.listeners),
+                }
+                if !sort.asc {
+                    list.reverse();
+                }
+            }
+            list
         });
         PageContext {
             error,
@@ -380,6 +503,8 @@ async fn render_page(app: &App, error: Option<String>) -> Reply {
                 .then(|| status.mixer.clone()),
             airplay_active,
             channels,
+            sort_query: sort_query(sort),
+            columns: column_headers(sort),
         }
     };
     match render_template(app, &context) {
