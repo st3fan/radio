@@ -56,6 +56,17 @@ apt-get install -y ./radiod_X.Y.Z-1_arm64.deb
   the mixer-ceiling line and `advertising as "Radio"`; the site answers
   on port 80.
 
+## Autopilot
+
+When Stefan asks Claude to do a release, that is standing permission to
+run **every step above autonomously**: agree on the version number
+first, then Claude does the rest — the bump PR (including merging it),
+publishing the release, watching the workflow, and the verify-and-
+upgrade on the radio. Claude-run releases end the release description
+with an attribution line:
+
+> *Release done by Claude with permission of @st3fan.*
+
 ## Prereleases (testing the workflow itself)
 
 Tag `vX.Y.Z-rcN` with `--prerelease`, optionally `--target <branch>`;
