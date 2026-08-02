@@ -129,14 +129,6 @@ jobs:
             fi
           fi
 
-      - name: Build website .deb
-        run: RADIO_WEBSITE_VERSION="${TAG#v}-1" ./deploy/build-website-deb.sh
-
-      - name: Attest website build provenance
-        uses: actions/attest-build-provenance@v4
-        with:
-          subject-path: radio-website_*_all.deb
-
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -146,7 +138,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mv radio-website_*_all.deb dist/
           cd dist
           sha256sum -- * > SHA256SUMS
           # --repo: skip gh's git-based repo detection, which trips over

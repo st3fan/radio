@@ -25,6 +25,7 @@ pub struct App {
     pub status: Arc<Mutex<Status>>,
     pub player: Player,
     pub resolver: Resolver,
+    pub web: Arc<crate::web::Web>,
 }
 
 #[derive(Deserialize)]
@@ -56,33 +57,10 @@ async fn route(method: &Method, url: &str, body: &str, app: &App) -> (u16, Strin
             if airplay_active(app) {
                 return (409, error_body("airplay session active"));
             }
-            match same_station_state(app, &request.playlist_url) {
-                // Already playing this playlist: no-op, don't interrupt.
-                Some(State::Playing) => return (200, status_body(app)),
-                // Paused on this playlist: /play means resume it.
-                Some(State::Paused) => {
-                    app.player.send(Command::Resume);
-                    return (200, status_body(app));
-                }
-                _ => {}
+            match start_playlist(app, request.playlist_url).await {
+                Ok(()) => (200, status_body(app)),
+                Err((code, message)) => (code, error_body(&message)),
             }
-            // The resolver does blocking network I/O; keep it off the
-            // single-threaded runtime.
-            let resolver = app.resolver.clone();
-            let playlist_url = request.playlist_url.clone();
-            let stream_url =
-                match tokio::task::spawn_blocking(move || resolver(&playlist_url)).await {
-                    Ok(Ok(url)) => url,
-                    Ok(Err(err)) => return (502, error_body(&err.to_string())),
-                    Err(err) => {
-                        return (500, error_body(&format!("playlist resolver failed: {err}")));
-                    }
-                };
-            app.player.send(Command::Play {
-                playlist_url: request.playlist_url,
-                stream_url,
-            });
-            (200, status_body(app))
         }
         (&Method::POST, "/stop") => {
             app.player.send(Command::Stop);
@@ -140,6 +118,34 @@ async fn route(method: &Method, url: &str, body: &str, app: &App) -> (u16, Strin
     }
 }
 
+/// Resolve-and-play, shared by the JSON API and the website's play action:
+/// same-station no-op/resume, then the blocking playlist fetch off the
+/// runtime, then the Play command.
+pub async fn start_playlist(app: &App, playlist_url: String) -> Result<(), (u16, String)> {
+    match same_station_state(app, &playlist_url) {
+        // Already playing this playlist: no-op, don't interrupt.
+        Some(State::Playing) => return Ok(()),
+        // Paused on this playlist: play means resume it.
+        Some(State::Paused) => {
+            app.player.send(Command::Resume);
+            return Ok(());
+        }
+        _ => {}
+    }
+    let resolver = app.resolver.clone();
+    let url = playlist_url.clone();
+    let stream_url = match tokio::task::spawn_blocking(move || resolver(&url)).await {
+        Ok(Ok(url)) => url,
+        Ok(Err(err)) => return Err((502, err.to_string())),
+        Err(err) => return Err((500, format!("playlist resolver failed: {err}"))),
+    };
+    app.player.send(Command::Play {
+        playlist_url,
+        stream_url,
+    });
+    Ok(())
+}
+
 /// The volume value is untouched by muting, so unmute restores it.
 fn set_muted(app: &App, muted: bool) {
     let mut status = app.status.lock().expect("status lock poisoned");
@@ -177,22 +183,57 @@ async fn read_body(body: Incoming) -> Result<String, String> {
     String::from_utf8(bytes.to_vec()).map_err(|err| err.to_string())
 }
 
+fn respond(code: u16, content_type: &str, body: Vec<u8>) -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(code)
+        .header(hyper::header::CONTENT_TYPE, content_type)
+        .body(Full::new(Bytes::from(body)))
+        .expect("valid response")
+}
+
 async fn handle(
     request: Request<Incoming>,
     app: Arc<App>,
 ) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
     let method = request.method().clone();
     let path = request.uri().path().to_string();
-    let (code, body) = match read_body(request.into_body()).await {
-        Ok(body) => route(&method, &path, &body, &app).await,
-        Err(err) => (400, error_body(&format!("invalid request body: {err}"))),
+    let query = request.uri().query().map(str::to_string);
+    let hx_request = request.headers().contains_key("hx-request");
+    let body = match read_body(request.into_body()).await {
+        Ok(body) => body,
+        Err(err) => {
+            return Ok(respond(
+                400,
+                "application/json",
+                error_body(&format!("invalid request body: {err}")).into_bytes(),
+            ));
+        }
     };
-    let response = Response::builder()
-        .status(code)
-        .header(hyper::header::CONTENT_TYPE, "application/json")
-        .body(Full::new(Bytes::from(body)))
-        .expect("valid response");
-    Ok(response)
+
+    // The website first (page, actions, assets), then the JSON API.
+    if let Some(reply) =
+        crate::web::route(&method, &path, query.as_deref(), &body, hx_request, &app).await
+    {
+        return Ok(match reply {
+            crate::web::Reply::Html(code, html) => {
+                respond(code, "text/html; charset=utf-8", html.into_bytes())
+            }
+            crate::web::Reply::Redirect(location) => Response::builder()
+                .status(303)
+                .header(hyper::header::LOCATION, location)
+                .body(Full::new(Bytes::new()))
+                .expect("valid response"),
+            crate::web::Reply::Asset(content_type, bytes) => respond(200, content_type, bytes),
+            crate::web::Reply::NotFound => respond(
+                404,
+                "application/json",
+                error_body("not found").into_bytes(),
+            ),
+        });
+    }
+
+    let (code, body) = route(&method, &path, &body, &app).await;
+    Ok(respond(code, "application/json", body.into_bytes()))
 }
 
 /// Accept loop. One task per connection — that is for HTTP keep-alive, not
@@ -247,6 +288,10 @@ mod tests {
                 status,
                 player,
                 resolver,
+                web: Arc::new(crate::web::Web::with_fetcher(
+                    None,
+                    crate::web::testing::fixed_channels_fetcher(),
+                )),
             },
             sink,
         )
@@ -669,6 +714,205 @@ mod tests {
         assert_eq!(code, 200);
         wait_for_state(&app, State::Stopped);
         drop(bridge_sink);
+    }
+
+    async fn web(
+        method: &Method,
+        path: &str,
+        query: Option<&str>,
+        body: &str,
+        hx: bool,
+        app: &App,
+    ) -> crate::web::Reply {
+        crate::web::route(method, path, query, body, hx, app)
+            .await
+            .expect("a web route")
+    }
+
+    #[tokio::test]
+    async fn website_page_renders_from_live_status_and_channels() {
+        let app = test_app(ok_resolver());
+        let crate::web::Reply::Html(code, html) =
+            web(&Method::GET, "/", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        assert_eq!(code, 200);
+        assert!(html.contains("SOMAFM TUNER"));
+        assert!(html.contains("— NO SIGNAL —"));
+        assert!(html.contains("STANDBY"));
+        // Channels from the injected fetcher, sorted by listeners.
+        assert!(html.contains("DEF CON Radio"));
+        assert!(html.contains("Groove Salad"));
+        // The error query parameter surfaces on the page.
+        let crate::web::Reply::Html(_, html) =
+            web(&Method::GET, "/", Some("error=boom"), "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        assert!(html.contains("! ERROR: boom"));
+    }
+
+    #[tokio::test]
+    async fn website_form_actions_follow_post_redirect_get() {
+        let app = test_app(ok_resolver());
+        let crate::web::Reply::Redirect(location) = web(
+            &Method::POST,
+            "/",
+            None,
+            "action=volume&volume=30",
+            false,
+            &app,
+        )
+        .await
+        else {
+            panic!("expected redirect");
+        };
+        assert_eq!(location, "/");
+        assert_eq!(app.status.lock().unwrap().volume, 30);
+
+        let crate::web::Reply::Redirect(location) = web(
+            &Method::POST,
+            "/",
+            None,
+            "action=volume&volume=oops",
+            false,
+            &app,
+        )
+        .await
+        else {
+            panic!("expected redirect");
+        };
+        assert!(location.starts_with("/?error="), "location {location}");
+        assert_eq!(app.status.lock().unwrap().volume, 30, "unchanged on error");
+    }
+
+    #[tokio::test]
+    async fn website_htmx_actions_return_the_refreshed_page() {
+        let app = test_app(ok_resolver());
+        let crate::web::Reply::Html(code, html) =
+            web(&Method::POST, "/", None, "action=mute", true, &app).await
+        else {
+            panic!("expected html");
+        };
+        assert_eq!(code, 200);
+        assert!(html.contains("· MUTED"));
+        assert!(app.status.lock().unwrap().muted);
+    }
+
+    #[tokio::test]
+    async fn website_play_action_resolves_channel_playlists() {
+        let app = test_app(ok_resolver());
+        let crate::web::Reply::Redirect(location) = web(
+            &Method::POST,
+            "/",
+            None,
+            "action=play&channel=groovesalad",
+            false,
+            &app,
+        )
+        .await
+        else {
+            panic!("expected redirect");
+        };
+        assert_eq!(location, "/");
+        wait_for_state(&app, State::Playing);
+        // The highest-quality mp3 playlist from the channel data.
+        assert_eq!(
+            app.status.lock().unwrap().playlist_url.as_deref(),
+            Some("https://api.somafm.com/groovesalad130.pls")
+        );
+        // The current channel is marked on the page.
+        let crate::web::Reply::Html(_, html) = web(&Method::GET, "/", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        assert!(html.contains("[ON AIR]"));
+
+        let crate::web::Reply::Redirect(location) = web(
+            &Method::POST,
+            "/",
+            None,
+            "action=play&channel=nope",
+            false,
+            &app,
+        )
+        .await
+        else {
+            panic!("expected redirect");
+        };
+        assert!(location.contains("unknown+channel"), "location {location}");
+
+        web(&Method::POST, "/", None, "action=stop", false, &app).await;
+        wait_for_state(&app, State::Stopped);
+    }
+
+    #[tokio::test]
+    async fn website_assets_are_embedded() {
+        let app = test_app(ok_resolver());
+        for (path, content_type) in [
+            ("/style.css", "text/css"),
+            ("/htmx.min.js", "text/javascript"),
+            ("/manifest.json", "application/manifest+json"),
+            ("/icon-180.png", "image/png"),
+        ] {
+            let crate::web::Reply::Asset(ct, bytes) =
+                web(&Method::GET, path, None, "", false, &app).await
+            else {
+                panic!("expected asset for {path}");
+            };
+            assert_eq!(ct, content_type, "path {path}");
+            assert!(!bytes.is_empty(), "path {path}");
+        }
+        // Unknown paths fall through to the JSON API's 404.
+        assert!(
+            crate::web::route(&Method::GET, "/nope.css", None, "", false, &app)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn website_shows_airplay_and_blocks_tuning() {
+        let app = test_app(ok_resolver());
+        let (_bridge_sink, source) = crate::airplay::bridge(44100, 2);
+        app.player.send(Command::AirplayStarted { source });
+        for _ in 0..500 {
+            if app.status.lock().unwrap().source == crate::status::AudioSource::Airplay {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let crate::web::Reply::Html(_, html) = web(&Method::GET, "/", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        assert!(html.contains("AIRPLAY ACTIVE"));
+        assert!(html.contains("— AIRPLAY —"));
+        assert!(
+            !html.contains("[PLAY]"),
+            "tune buttons hidden during airplay"
+        );
+
+        let crate::web::Reply::Redirect(location) = web(
+            &Method::POST,
+            "/",
+            None,
+            "action=play&channel=defcon",
+            false,
+            &app,
+        )
+        .await
+        else {
+            panic!("expected redirect");
+        };
+        assert!(
+            location.contains("airplay+session+active"),
+            "location {location}"
+        );
+
+        web(&Method::POST, "/", None, "action=stop", false, &app).await;
+        wait_for_state(&app, State::Stopped);
     }
 
     #[tokio::test]

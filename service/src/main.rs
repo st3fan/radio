@@ -10,6 +10,7 @@ mod sink;
 mod source;
 mod status;
 mod volume;
+mod web;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -23,8 +24,8 @@ use sink::{AudioSink, NullSink, WavSink};
 use source::{Source, SourceError};
 use status::{State, Status};
 
-const USAGE: &str =
-    "usage: radiod [--config <path>] [--sink alsa|null|wav:<path>] [-v | --version]";
+const USAGE: &str = "usage: radiod [--config <path>] [--sink alsa|null|wav:<path>] \
+     [--web-dir <path>] [-v | --version]";
 
 #[cfg(target_os = "linux")]
 const DEFAULT_SINK: &str = "alsa";
@@ -34,12 +35,16 @@ const DEFAULT_SINK: &str = "null";
 struct Args {
     config_path: Option<PathBuf>,
     sink: Option<String>,
+    /// Serve templates/assets from this directory instead of the embedded
+    /// copies — PHP-style edit-and-reload during development.
+    web_dir: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
     let mut config_path = None;
     let mut sink = None;
+    let mut web_dir = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--config" => {
@@ -50,6 +55,10 @@ fn parse_args() -> Result<Args, String> {
                 let value = args.next().ok_or("--sink requires a value")?;
                 sink = Some(value);
             }
+            "--web-dir" => {
+                let path = args.next().ok_or("--web-dir requires a path")?;
+                web_dir = Some(PathBuf::from(path));
+            }
             "-v" | "--version" => {
                 println!("radiod {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
@@ -57,7 +66,11 @@ fn parse_args() -> Result<Args, String> {
             other => return Err(format!("unknown argument {other:?}\n{USAGE}")),
         }
     }
-    Ok(Args { config_path, sink })
+    Ok(Args {
+        config_path,
+        sink,
+        web_dir,
+    })
 }
 
 fn load_config(args: &Args) -> Result<Config, String> {
@@ -260,6 +273,7 @@ async fn main() -> ExitCode {
         status: status.clone(),
         player: player.clone(),
         resolver: Arc::new(pls::resolve),
+        web: Arc::new(web::Web::new(args.web_dir.clone())),
     });
 
     println!(

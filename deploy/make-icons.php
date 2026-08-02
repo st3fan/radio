@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 // Dev-time icon generator (needs php-gd): draws the pixel-art phosphor
 // icon — a blocky R with a cursor block — from the ASCII grid below and
-// writes the PNGs into website/public/. The PNGs are committed, so
+// writes the PNGs into service/web/. The PNGs are committed, so
 // package builds never need GD; re-run this only to change the icon.
 //
 //   php deploy/make-icons.php
@@ -64,7 +64,7 @@ function render(int $size, float $content_scale, string $path): void
     echo "$path ({$size}x{$size})\n";
 }
 
-$out = __DIR__ . '/../website/public';
+$out = __DIR__ . '/../service/web';
 render(180, 1.0, "$out/icon-180.png");
 render(192, 1.0, "$out/icon-192.png");
 render(512, 1.0, "$out/icon-512.png");

@@ -1,10 +1,12 @@
 # The radiod HTTP API
 
-The daemon listens on `127.0.0.1:8080` (configurable, loopback only — the
-website talks to it server-side; nothing on the LAN reaches it directly).
-Every response has `Content-Type: application/json`. Request bodies are
-JSON; no `Content-Type` header is required on requests, and bodies are
-capped at 64 KB.
+The daemon's HTTP server (`listen` in the config, port 80 on the radio)
+carries both the built-in website and this JSON API — the API is
+LAN-reachable by design and exposes the same controls the website does.
+Every API response has `Content-Type: application/json`. Request bodies
+are JSON; no `Content-Type` header is required on requests, and bodies
+are capped at 64 KB. (Dev builds default to port 8080; the examples
+below use that.)
 
 ## Conventions
 

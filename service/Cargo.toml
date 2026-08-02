@@ -25,6 +25,10 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 tokio = { version = "1", features = ["rt", "net", "signal", "sync", "time", "macros", "io-util"] }
 
+# The built-in website: minijinja renders the page (templates embedded in
+# the binary; --web-dir loads them from disk for dev). Pure Rust, ~no deps.
+minijinja = "2"
+
 # The embedded AirPlay 2 receiver (milestone 11): network -> PCM + events,
 # pure Rust (symphonia AAC, RustCrypto, zbus for Avahi), runs on our tokio
 # runtime. The bridge into the pipeline lives in src/airplay.rs.
@@ -50,6 +54,10 @@ depends = "libavformat61, libavcodec61, libavutil59, libswresample5, libasound2t
 # AirPlay needs Avahi for the _airplay._tcp advertisement; without it the
 # receiver degrades to radio-only instead of failing, hence Recommends.
 recommends = "avahi-daemon"
+# The website moved into radiod; upgrading removes the old PHP package
+# (lighttpd/php-fpm stay installed but idle — purge them by hand).
+conflicts = "radio-website"
+replaces = "radio-website"
 assets = [
     ["target/release/radiod", "usr/bin/", "755"],
     ["../deploy/config.toml.example", "etc/radio/config.toml", "644"],

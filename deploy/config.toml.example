@@ -4,8 +4,11 @@
 # lets ALSA convert sample rates/formats the hardware does not support.
 audio_device = "plughw:0,0"
 
-# The HTTP API endpoint. Must be a loopback address.
-#listen = "127.0.0.1:8080"
+# Where the built-in website (and JSON API) listens. Port 80 keeps the
+# origin of installed home-screen PWAs (http://<host>/) working; the
+# systemd unit grants the port-80 capability. Use a loopback address if
+# the radio should not be reachable from the LAN.
+listen = "0.0.0.0:80"
 
 # The volume at startup (0-100).
 #initial_volume = 50

@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Radio</title>
+<link rel="stylesheet" href="style.css">
+<script src="htmx.min.js" defer></script>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="theme-color" content="#050805">
+<meta name="apple-mobile-web-app-title" content="RADIO">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+</head>
+<body>
+
+<header class="term-head">
+<span>RADIO</span>
+<span class="dim">SOMAFM TUNER</span>
+</header>
+
+{# The whole app block polls every 5 s so everything converges — the
+   now-playing text AND the [ON AIR] marker in the channel table (play
+   commands are asynchronous; the response to a button press can still
+   show the previous station for a moment). The volume input carries
+   hx-preserve so a poll never clobbers half-typed input. #}
+<div id="app" hx-get="/" hx-select="#app" hx-target="this"
+     hx-swap="outerHTML" hx-trigger="every 5s">
+
+{% if error %}
+<p class="error">! ERROR: {{ error }}</p>
+{% endif %}
+
+<section class="now" id="now">
+<div class="prompt dim">&gt; {{ prompt }}</div>
+<h1 class="title{% if title_dim %} dim{% endif %}">{{ title }}{% if state != "stopped" %}<span class="cursor" aria-hidden="true"></span>{% endif %}</h1>
+<div class="station">{{ icy_name }}</div>
+<div class="vol dim">VOL {{ volume_bar }}{% if muted %} · MUTED{% endif %}</div>
+{% if mixer_warning %}
+<div class="vol">MIXER {{ mixer_warning }}</div>
+{% endif %}
+</section>
+
+<section class="controls">
+{% if airplay_active %}
+<span class="dim">[AIRPLAY ACTIVE — the sender controls playback]</span>
+{% elif state == "playing" %}
+<form method="post" action="/" hx-post="/" hx-target="#app" hx-select="#app" hx-swap="outerHTML"><button name="action" value="pause">[PAUSE]</button></form>
+{% elif state == "paused" %}
+<form method="post" action="/" hx-post="/" hx-target="#app" hx-select="#app" hx-swap="outerHTML"><button name="action" value="resume">[RESUME]</button></form>
+{% endif %}
+{% if state != "stopped" %}
+<form method="post" action="/" hx-post="/" hx-target="#app" hx-select="#app" hx-swap="outerHTML"><button name="action" value="stop">[STOP]</button></form>
+{% endif %}
+{% if muted %}
+<form method="post" action="/" hx-post="/" hx-target="#app" hx-select="#app" hx-swap="outerHTML"><button name="action" value="unmute">[UNMUTE]</button></form>
+{% else %}
+<form method="post" action="/" hx-post="/" hx-target="#app" hx-select="#app" hx-swap="outerHTML"><button name="action" value="mute">[MUTE]</button></form>
+{% endif %}
+<form method="post" action="/" hx-post="/" hx-target="#app" hx-select="#app" hx-swap="outerHTML">
+<input type="hidden" name="volume" value="{{ volume_down }}">
+<button name="action" value="volume">[VOL-]</button>
+</form>
+<form method="post" action="/" hx-post="/" hx-target="#app" hx-select="#app" hx-swap="outerHTML">
+<input type="hidden" name="volume" value="{{ volume_up }}">
+<button name="action" value="volume">[VOL+]</button>
+</form>
+</section>
+
+<form method="post" action="/" class="volform" hx-post="/" hx-target="#app" hx-select="#app" hx-swap="outerHTML">
+<label>VOL%
+<input type="number" name="volume" min="0" max="100" value="{{ volume }}" id="volume-input" hx-preserve>
+</label>
+<button name="action" value="volume">[SET]</button>
+</form>
+
+<section class="channels">
+<div class="heading dim">&gt; CHANNELS</div>
+{% if channels is none %}
+<p class="error">! CHANNEL LIST UNAVAILABLE</p>
+{% else %}
+<table>
+<tr><th>CH</th><th>STATION</th><th class="col-genre">GENRE</th><th class="num">LSNRS</th><th></th></tr>
+{% for channel in channels %}
+<tr{% if channel.is_current %} class="playing"{% endif %}>
+<td>{% if loop.index < 10 %}0{% endif %}{{ loop.index }}</td>
+<td title="{{ channel.description }}">{% if channel.is_current %}&gt; {% endif %}{{ channel.title }}</td>
+<td class="col-genre genre">{{ channel.genre }}</td>
+<td class="num">{{ channel.listeners }}</td>
+<td>
+{% if channel.is_current %}
+<span class="onair">[ON AIR]</span>
+{% elif airplay_active %}
+<span class="dim">[AIRPLAY]</span>
+{% else %}
+<form method="post" action="/" hx-post="/" hx-target="#app" hx-select="#app" hx-swap="outerHTML">
+<input type="hidden" name="channel" value="{{ channel.id }}">
+<button name="action" value="play">[PLAY]</button>
+</form>
+{% endif %}
+</td>
+</tr>
+{% endfor %}
+</table>
+{% endif %}
+</section>
+
+</div>
+
+<footer class="dim">RADIO · CHANNEL DATA © SOMAFM, CACHED 5 MIN · LISTENER-SUPPORTED RADIO</footer>
+
+<script>
+/* The blinking cursor doubles as the "updates are alive" indicator. */
+document.body.addEventListener("htmx:afterOnLoad", function () { document.body.classList.add("live"); });
+document.body.addEventListener("htmx:sendError", function () { document.body.classList.remove("live"); });
+</script>
+
+</body>
+</html>
