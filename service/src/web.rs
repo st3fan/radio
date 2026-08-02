@@ -410,6 +410,8 @@ struct PageContext {
     /// Artwork of the station that is playing (or paused); None renders
     /// the empty frame so the layout never moves.
     now_image: Option<String>,
+    /// The negotiated AirPlay stream, e.g. "44100 HZ · 2 CH · AAC".
+    airplay_stream: String,
     channels: Option<Vec<Channel>>,
     /// "" for the default view, else "?sort=..&dir=.." — baked into the
     /// poll URL and form targets so the chosen order survives swaps.
@@ -464,7 +466,7 @@ async fn render_page(app: &App, error: Option<String>, sort: Option<Sort>) -> Re
             State::Stopped => "stopped",
         };
         let prompt = if airplay_active {
-            "AIRPLAY"
+            "STREAMING OPENAIRPLAY"
         } else {
             match status.state {
                 State::Playing => "NOW PLAYING",
@@ -474,8 +476,11 @@ async fn render_page(app: &App, error: Option<String>, sort: Option<Sort>) -> Re
         };
         let mut title = status.icy_title.clone().unwrap_or_default();
         let mut title_dim = false;
-        if airplay_active && title.is_empty() {
-            title = "— AIRPLAY —".to_string();
+        if airplay_active {
+            // The metadata slot: DMAP track info is a future openairplay2
+            // feature; a placeholder holds the line meanwhile.
+            title = "— NO TRACK INFO —".to_string();
+            title_dim = true;
         } else if status.state == State::Paused {
             // Stopped-but-remembered: the song is gone, the station is
             // kept — just the cursor blinking on an empty line.
@@ -529,6 +534,10 @@ async fn render_page(app: &App, error: Option<String>, sort: Option<Sort>) -> Re
             mixer_warning: (status.mixer != "ok" && status.mixer != "disabled")
                 .then(|| status.mixer.clone()),
             airplay_active,
+            airplay_stream: status
+                .airplay
+                .map(|info| format!("{} HZ · {} CH · AAC", info.rate, info.channels))
+                .unwrap_or_default(),
             now_image,
             channels,
             sort_query: sort_query(sort),

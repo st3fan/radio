@@ -25,7 +25,7 @@
 
 <header class="term-head">
 {% if dev_hash %}<a class="quiet" href="https://github.com/st3fan/radio/commit/{{ dev_hash }}">RADIO DEV ({{ dev_hash }})</a>{% else %}<a class="quiet" href="https://github.com/st3fan/radio/releases/tag/v{{ version }}">RADIO {{ version }}</a>{% endif %}
-<span class="dim">SOMAFM TUNER</span>
+<span class="dim">{% if airplay_active %}OPENAIRPLAY RECEIVER{% else %}SOMAFM TUNER{% endif %}</span>
 </header>
 
 {# The whole app block polls every 2.5 s so everything converges — the
@@ -42,28 +42,45 @@
 <section class="now" id="now">
 {# The art box is also the layout anchor: same size whether artwork,
    AirPlay or standby — the top section never jumps. #}
+{% if airplay_active %}
+<div class="art airwaves" aria-hidden="true">
+<svg viewBox="0 0 96 96" xmlns="http://www.w3.org/2000/svg">
+<g fill="none" stroke="currentColor" stroke-width="2">
+<circle class="w w1" cx="48" cy="48" r="12"/>
+<circle class="w w2" cx="48" cy="48" r="24"/>
+<circle class="w w3" cx="48" cy="48" r="36"/>
+<circle class="w w4" cx="48" cy="48" r="46"/>
+</g>
+<circle cx="48" cy="48" r="4" fill="currentColor"/>
+</svg>
+</div>
+{% else %}
 <div class="art{% if not now_image %} empty{% endif %}"><img src="{{ now_image or "https://somafm.com/img3/LoneDJsquare400.jpg" }}" alt=""></div>
+{% endif %}
 <div class="nowtext">
 <div class="prompt dim">&gt; {{ prompt }}</div>
 <h1 class="title{% if title_dim %} dim{% endif %}">{{ title }}{% if state != "stopped" %}<span class="cursor" aria-hidden="true"></span>{% endif %}</h1>
-<div class="station">{{ icy_name }}</div>
+<div class="station">{% if airplay_active %}{{ airplay_stream }}{% else %}{{ icy_name }}{% endif %}</div>
 {# One transport button leads the line: [STOP] while playing, [PLAY]
    while a stopped station is remembered (pause/resume underneath — the
    station survives, the reconnect is fresh). The bar is the slider:
    twenty segment-buttons in one form, each submitting its position's
    volume; the nudge buttons share that form. #}
 <div class="vol dim volline">
-{% if not airplay_active %}{% if state == "playing" %}
+{% if airplay_active %}
+<form method="post" action="/{{ sort_query }}" hx-post="/{{ sort_query }}" hx-target="#app" hx-select="#app" hx-swap="outerHTML"><button name="action" value="stop">[STOP]</button></form>
+{% else %}{% if state == "playing" %}
 <form method="post" action="/{{ sort_query }}" hx-post="/{{ sort_query }}" hx-target="#app" hx-select="#app" hx-swap="outerHTML"><button name="action" value="pause">[STOP]</button></form>
 {% elif state == "paused" %}
 <form method="post" action="/{{ sort_query }}" hx-post="/{{ sort_query }}" hx-target="#app" hx-select="#app" hx-swap="outerHTML"><button name="action" value="resume">[PLAY]</button></form>
-{% endif %}{% endif %}
+{% endif %}
 <form class="volbar" method="post" action="/{{ sort_query }}" hx-post="/{{ sort_query }}" hx-target="#app" hx-select="#app" hx-swap="outerHTML">
 <input type="hidden" name="action" value="volume">
 VOL [{% for i in range(1, 21) %}<button class="seg" name="volume" value="{{ i * 5 }}" title="volume {{ i * 5 }}">{% if i <= volume_filled %}█{% else %}░{% endif %}</button>{% endfor %}] {{ volume }}/100{% if muted %} · MUTED{% endif %}
 <button name="volume" value="{{ volume_down }}">[VOL-]</button>
 <button name="volume" value="{{ volume_up }}">[VOL+]</button>
 </form>
+{% endif %}
 </div>
 {% if mixer_warning %}
 <div class="vol">MIXER {{ mixer_warning }}</div>
@@ -71,17 +88,10 @@ VOL [{% for i in range(1, 21) %}<button class="seg" name="volume" value="{{ i * 
 </div>
 </section>
 
-{# Transport lives on the sender side (channel list, AirPlay device);
-   the API keeps /pause, /resume, /stop, /mute for scripts. A paused
-   state set via the API still renders (RESUME prompt shows) even
-   though the UI cannot create it. #}
-{% if airplay_active %}
-<section class="controls">
-<span class="dim">[AIRPLAY ACTIVE — the sender controls playback]</span>
-</section>
-{% endif %}
 
 
+
+{% if not airplay_active %}
 <section class="channels">
 <div class="heading dim">&gt; CHANNELS</div>
 {% if channels is none %}
@@ -98,8 +108,6 @@ VOL [{% for i in range(1, 21) %}<button class="seg" name="volume" value="{{ i * 
 <td>
 {% if channel.is_current %}
 <span class="onair">[ON AIR]</span>
-{% elif airplay_active %}
-<span class="dim">[AIRPLAY]</span>
 {% else %}
 <form method="post" action="/{{ sort_query }}" hx-post="/{{ sort_query }}" hx-target="#app" hx-select="#app" hx-swap="outerHTML">
 <input type="hidden" name="channel" value="{{ channel.id }}">
@@ -112,6 +120,7 @@ VOL [{% for i in range(1, 21) %}<button class="seg" name="volume" value="{{ i * 
 </table>
 {% endif %}
 </section>
+{% endif %}
 
 </div>
 

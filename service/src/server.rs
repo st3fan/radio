@@ -1092,7 +1092,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn website_shows_airplay_and_blocks_tuning() {
+    async fn website_becomes_a_receiver_page_during_airplay() {
         let app = test_app(ok_resolver());
         let (_bridge_sink, source) = crate::airplay::bridge(44100, 2);
         app.player.send(Command::AirplayStarted { source });
@@ -1106,13 +1106,26 @@ mod tests {
         else {
             panic!("expected html");
         };
-        assert!(html.contains("AIRPLAY ACTIVE"));
-        assert!(html.contains("— AIRPLAY —"));
+        // The mode, not a badge: receiver banner, streaming prompt, the
+        // metadata placeholder, the negotiated stream, the wave mark.
+        assert!(html.contains("OPENAIRPLAY RECEIVER"));
+        assert!(!html.contains("SOMAFM TUNER"));
+        assert!(html.contains("STREAMING OPENAIRPLAY"));
+        assert!(html.contains("— NO TRACK INFO —"));
+        assert!(html.contains("44100 HZ · 2 CH · AAC"));
+        assert!(html.contains("airwaves"));
+        // No SomaFM UI, no volume controls — just [STOP].
+        assert!(!html.contains("CHANNELS"));
+        assert!(!html.contains("Groove Salad"));
+        assert!(!html.contains(r#"class="seg""#));
+        assert!(!html.contains("[VOL"));
+        assert!(html.contains(r#"value="stop">[STOP]"#));
         assert!(
             !html.contains("[PLAY]"),
             "tune buttons hidden during airplay"
         );
 
+        // Tuning is still refused server-side while a sender owns the pipe.
         let crate::web::Reply::Redirect(location) = web(
             &Method::POST,
             "/",
@@ -1130,8 +1143,15 @@ mod tests {
             "location {location}"
         );
 
+        // [STOP] returns the tuner.
         web(&Method::POST, "/", None, "action=stop", false, &app).await;
         wait_for_state(&app, State::Stopped);
+        let crate::web::Reply::Html(_, html) = web(&Method::GET, "/", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        assert!(html.contains("SOMAFM TUNER"));
+        assert!(html.contains("STANDBY"));
     }
 
     #[tokio::test]
