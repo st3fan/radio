@@ -23,8 +23,7 @@
 {# The whole app block polls every 5 s so everything converges — the
    now-playing text AND the [ON AIR] marker in the channel table (play
    commands are asynchronous; the response to a button press can still
-   show the previous station for a moment). The volume input carries
-   hx-preserve so a poll never clobbers half-typed input. #}
+   show the previous station for a moment). #}
 <div id="app" hx-get="/" hx-select="#app" hx-target="this"
      hx-swap="outerHTML" hx-trigger="every 5s">
 
@@ -68,12 +67,6 @@
 </form>
 </section>
 
-<form method="post" action="/" class="volform" hx-post="/" hx-target="#app" hx-select="#app" hx-swap="outerHTML">
-<label>VOL%
-<input type="number" name="volume" min="0" max="100" value="{{ volume }}" id="volume-input" hx-preserve>
-</label>
-<button name="action" value="volume">[SET]</button>
-</form>
 
 <section class="channels">
 <div class="heading dim">&gt; CHANNELS</div>

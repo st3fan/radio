@@ -106,8 +106,7 @@ body.live .now .cursor {
 
 /* ---- controls ---- */
 
-.controls,
-.volform {
+.controls {
     display: flex;
     align-items: center;
     gap: 4px 14px;
