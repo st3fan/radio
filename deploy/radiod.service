@@ -12,6 +12,8 @@ SupplementaryGroups=audio
 # The AirPlay receiver identity lives here: state, not config — senders
 # remember the receiver by it, so it must survive upgrades.
 StateDirectory=radiod
+# The built-in website binds port 80 as the radio user.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 Restart=always
 RestartSec=5
 NoNewPrivileges=true

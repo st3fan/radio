@@ -6,7 +6,10 @@ use serde::Deserialize;
 
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/radio/config.toml";
 
-const DEFAULT_LISTEN: &str = "127.0.0.1:8080";
+// The server now carries the website too, so it faces the LAN by design;
+// the deb's config example uses port 80 (the installed-PWA origin), while
+// the compiled default stays on 8080 so `cargo run` needs no privileges.
+const DEFAULT_LISTEN: &str = "0.0.0.0:8080";
 const DEFAULT_AUDIO_DEVICE: &str = "plughw:1,0";
 const DEFAULT_INITIAL_VOLUME: u8 = 50;
 
@@ -151,11 +154,6 @@ impl Config {
             })?,
             None => defaults.listen,
         };
-        if !listen.ip().is_loopback() {
-            return Err(ConfigError::Invalid(format!(
-                "listen address {listen} is not a loopback address; the API is loopback-only by design"
-            )));
-        }
 
         // The software cap is gone; refuse the old key with a pointer to
         // its replacement instead of a generic unknown-field error.
@@ -264,7 +262,7 @@ mod tests {
     fn empty_file_yields_defaults() {
         let config = Config::from_toml("").unwrap();
         assert_eq!(config, Config::default());
-        assert_eq!(config.listen, "127.0.0.1:8080".parse().unwrap());
+        assert_eq!(config.listen, "0.0.0.0:8080".parse().unwrap());
         assert_eq!(config.audio_device, "plughw:1,0");
         assert_eq!(config.initial_volume, 50);
         assert_eq!(config.mixer, None);
@@ -367,21 +365,18 @@ mod tests {
     }
 
     #[test]
-    fn non_loopback_listen_is_rejected() {
-        assert!(matches!(
-            Config::from_toml(r#"listen = "0.0.0.0:8080""#),
-            Err(ConfigError::Invalid(_))
-        ));
-        assert!(matches!(
-            Config::from_toml(r#"listen = "192.168.1.10:8080""#),
-            Err(ConfigError::Invalid(_))
-        ));
-    }
-
-    #[test]
-    fn ipv6_loopback_is_accepted() {
-        let config = Config::from_toml(r#"listen = "[::1]:8080""#).unwrap();
-        assert!(config.listen.ip().is_loopback());
+    fn any_listen_address_is_accepted() {
+        // The server carries the website, so LAN-facing addresses are the
+        // normal case now; loopback still works for a private radio.
+        for listen in [
+            "0.0.0.0:80",
+            "192.168.1.10:8080",
+            "127.0.0.1:8080",
+            "[::1]:8080",
+        ] {
+            let config = Config::from_toml(&format!("listen = \"{listen}\"")).unwrap();
+            assert_eq!(config.listen, listen.parse().unwrap());
+        }
     }
 
     #[test]
