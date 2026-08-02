@@ -17,15 +17,19 @@ One binary, one Debian package. `radiod` (`service/`):
 
 - **Streams and decodes** the icecast stream in-process via the FFmpeg
   libraries and plays to ALSA, with live ICY song titles.
-- **Serves its own website** (`service/web/`): the SomaFM channel list,
-  playback controls and now-playing display, rendered server-side
-  (minijinja) with HTMX interactions, installable as an iPhone PWA —
-  plus the JSON API (`/play`, `/stop`, `/pause`, `/resume`, `/volume`,
-  `/mute`, `/unmute`, `/status`) on the same port for scripts.
+- **Serves its own website** (`service/web/`): the sortable SomaFM
+  channel list, transport and volume controls, now-playing display with
+  channel artwork, rendered server-side (minijinja) with HTMX
+  interactions, installable as an iPhone PWA — plus the JSON API
+  (`/play`, `/stop`, `/pause`, `/resume`, `/volume`, `/mute`,
+  `/unmute`, `/status`) on the same port for scripts. The volume
+  setting survives restarts and upgrades.
 - **Embeds an AirPlay 2 receiver**
   ([openairplay2](https://github.com/st3fan/openairplay2)): an AirPlay
   session preempts the radio, the station resumes when it ends, and the
-  sender's volume slider behaves like the website's.
+  sender's volume slider behaves like the website's. During a session
+  the website turns into the receiver page and shows what the sender is
+  playing — track title, artist, album and cover art, live.
 - The speakers are protected by a **hardware mixer ceiling** the daemon
   owns, asserts, and re-asserts — no source, slider, or software bug
   can exceed it.
@@ -74,9 +78,13 @@ now-idle web stack.
 
 ## Development
 
-Plan-based, PR-based — see `CLAUDE.md` for the ways of working and
-`notes/plan.md` for the design. Daemon development happens on macOS
-(`cargo test` in `service/`), real-audio testing on a Debian machine,
-and the radio board only ever runs release packages. Website iteration:
-`cargo run -- --sink null --web-dir service/web` serves templates and
-assets from disk — edit, reload, no recompile.
+Plan-based, PR-based — see `CLAUDE.md` for the ways of working,
+`notes/plan.md` for the design, and `runbooks/` for operational
+procedures such as releasing. Every pull request runs the full
+`cargo test` / `clippy` / `fmt` CI in a Debian trixie container.
+Daemon development happens on macOS (`cargo test` in `service/`),
+real-audio testing on a Debian machine, and the radio board only ever
+runs release packages — unreleased builds give themselves away with a
+`RADIO DEV (git hash)` banner in place of the version number. Website
+iteration: `cargo run -- --sink null --web-dir service/web` serves
+templates and assets from disk — edit, reload, no recompile.
