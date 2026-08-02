@@ -184,9 +184,23 @@ async fn read_body(body: Incoming) -> Result<String, String> {
 }
 
 fn respond(code: u16, content_type: &str, body: Vec<u8>) -> Response<Full<Bytes>> {
+    respond_cached(code, content_type, body, "no-store")
+}
+
+/// Without cache headers browsers cache heuristically — deployed CSS/JS
+/// changes then never reach open tabs. Assets say no-cache (revalidate:
+/// on a LAN, refetching a few small files per load is nothing); dynamic
+/// responses say no-store.
+fn respond_cached(
+    code: u16,
+    content_type: &str,
+    body: Vec<u8>,
+    cache_control: &str,
+) -> Response<Full<Bytes>> {
     Response::builder()
         .status(code)
         .header(hyper::header::CONTENT_TYPE, content_type)
+        .header(hyper::header::CACHE_CONTROL, cache_control)
         .body(Full::new(Bytes::from(body)))
         .expect("valid response")
 }
@@ -223,7 +237,9 @@ async fn handle(
                 .header(hyper::header::LOCATION, location)
                 .body(Full::new(Bytes::new()))
                 .expect("valid response"),
-            crate::web::Reply::Asset(content_type, bytes) => respond(200, content_type, bytes),
+            crate::web::Reply::Asset(content_type, bytes) => {
+                respond_cached(200, content_type, bytes, "no-cache")
+            }
             crate::web::Reply::NotFound => respond(
                 404,
                 "application/json",
