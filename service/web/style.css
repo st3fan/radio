@@ -98,6 +98,9 @@ body::after {
         brightness(0.85) contrast(1.05);
 }
 
+/* Standby: SomaFM's lone DJ holds the frame, dimmed like an idle tube. */
+.now .art.empty img { opacity: 0.55; }
+
 .now .nowtext { flex: 1; min-width: 0; }
 
 .now .station { min-height: 1.6em; }

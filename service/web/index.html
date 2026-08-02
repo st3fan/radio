@@ -34,7 +34,7 @@
 <section class="now" id="now">
 {# The art box is also the layout anchor: same size whether artwork,
    AirPlay or standby — the top section never jumps. #}
-<div class="art{% if not now_image %} empty{% endif %}">{% if now_image %}<img src="{{ now_image }}" alt="">{% endif %}</div>
+<div class="art{% if not now_image %} empty{% endif %}"><img src="{{ now_image or "https://somafm.com/img3/LoneDJsquare400.jpg" }}" alt=""></div>
 <div class="nowtext">
 <div class="prompt dim">&gt; {{ prompt }}</div>
 <h1 class="title{% if title_dim %} dim{% endif %}">{{ title }}{% if state != "stopped" %}<span class="cursor" aria-hidden="true"></span>{% endif %}</h1>

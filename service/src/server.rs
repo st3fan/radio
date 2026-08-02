@@ -856,7 +856,10 @@ mod tests {
             panic!("expected html");
         };
         assert!(html.contains(r#"class="art empty""#));
-        assert!(!html.contains("<img"), "no artwork while stopped");
+        assert!(
+            html.contains("LoneDJsquare400.jpg"),
+            "the lone DJ holds the empty frame"
+        );
 
         web(
             &Method::POST,
@@ -875,6 +878,10 @@ mod tests {
         // minijinja entity-escapes slashes in attributes; match on the
         // slash-free part of the URL.
         assert!(html.contains("groovesalad-400.jpg"), "largeimage preferred");
+        assert!(
+            !html.contains("LoneDJsquare400.jpg"),
+            "placeholder replaced"
+        );
         // Only in the now-playing section: exactly one image on the page.
         assert_eq!(html.matches("<img").count(), 1);
 
