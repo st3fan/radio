@@ -755,6 +755,9 @@ mod tests {
         };
         assert_eq!(code, 200);
         assert!(html.contains("SOMAFM TUNER"));
+        // The banner names the running version and links to its release.
+        assert!(html.contains(&format!("RADIO {}", env!("CARGO_PKG_VERSION"))));
+        assert!(html.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))));
         assert!(html.contains("— NO SIGNAL —"));
         assert!(html.contains("STANDBY"));
         // Channels from the injected fetcher, sorted by listeners.
