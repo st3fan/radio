@@ -89,7 +89,9 @@ merged history keeps its shape.
   change done.
 - Keep dependencies minimal and justify new ones in the PR description. The
   approved core set: `ffmpeg-next`, `alsa`, `tokio`, `hyper` (with
-  `hyper-util` and `http-body-util`), `ureq`, `serde`, `toml`.
+  `hyper-util` and `http-body-util`), `ureq`, `serde`, `toml`, and
+  `openairplay2` (the embedded AirPlay receiver, pure Rust, pulled from
+  its git repo).
 - **Async is for the control plane only.** The HTTP API (and later the
   embedded AirPlay receiver) runs on a current-thread tokio runtime;
   blocking calls in handlers go through `spawn_blocking`. The audio path —

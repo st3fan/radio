@@ -23,19 +23,22 @@
     cursor.className = "cursor";
     cursor.setAttribute("aria-hidden", "true");
 
-    function bar(volume, max) {
+    function bar(volume) {
         var segments = 20;
-        var filled = max > 0 ? Math.round((volume * segments) / max) : 0;
-        filled = Math.max(0, Math.min(segments, filled));
-        return "[" + "█".repeat(filled) + "░".repeat(segments - filled) + "] " + volume + "/" + max;
+        var filled = Math.max(0, Math.min(segments, Math.round((volume * segments) / 100)));
+        return "[" + "█".repeat(filled) + "░".repeat(segments - filled) + "] " + volume + "/100";
     }
 
     function apply(s) {
-        var label = s.state === "playing" ? "NOW PLAYING" : s.state === "paused" ? "PAUSED" : "STANDBY";
+        var airplay = s.source === "airplay";
+        var label = airplay ? "AIRPLAY" : s.state === "playing" ? "NOW PLAYING" : s.state === "paused" ? "PAUSED" : "STANDBY";
         prompt.textContent = "> " + label;
 
         if (s.icy_title) {
             title.textContent = s.icy_title;
+            title.classList.remove("dim");
+        } else if (airplay) {
+            title.textContent = "— AIRPLAY —";
             title.classList.remove("dim");
         } else if (s.state === "stopped") {
             title.textContent = "— NO SIGNAL —";
@@ -49,7 +52,7 @@
         }
 
         station.textContent = s.icy_name || "";
-        vol.textContent = "VOL " + bar(s.volume, s.max_volume) + (s.muted ? " · MUTED" : "");
+        vol.textContent = "VOL " + bar(s.volume) + (s.muted ? " · MUTED" : "");
     }
 
     function tick() {

@@ -691,3 +691,13 @@ are the two that unblock other things.
   station has dropped 5 times in an hour" in the UI would make bad streams
   obvious — and becomes important the moment we add a directory full of
   half-dead stations.
+- **Absorb the website into radiod.** With the daemon committed to being
+  a monolith (milestone 11 decision record), the PHP site + lighttpd +
+  php-fpm stack is the only reason a second and third service exist.
+  radiod already serves HTTP; serving the UI from the same hyper server
+  (static assets embedded in the binary, the current server-side calls
+  becoming in-process) would collapse the install to one deb and one
+  unit — and shrink the 512 MB-class memory story further. Costs: the
+  daemon's HTTP server stops being loopback-only (the LAN reaches it
+  directly — the API surface needs a real look), and UI iteration speed
+  loses PHP's edit-and-reload.

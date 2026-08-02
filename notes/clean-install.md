@@ -60,6 +60,16 @@ until configured, instead of accidentally working against the wrong
 card? (With `Restart=always`, refusal means a brief restart burst and
 then a failed unit with a helpful journal.)
 
+## Redeploying dev builds (same version number)
+
+`apt install --reinstall ./radiod_<v>.deb` is a trap for dev builds:
+when the version number hasn't changed, apt quietly prefers its cached
+archive of that version over the file you just copied — the binary on
+disk never changes and there is no error. For same-version redeploys
+use `dpkg -i ./radiod_<v>.deb` (then `systemctl restart radiod`), and
+when in doubt compare `sha256sum /usr/bin/radiod` against the build.
+Real releases bump the version, so apt behaves there.
+
 ## Validation results on muzak
 
 - Ceiling: `PCM` on `hw:1` pinned at exactly -20.00 dB, verified via

@@ -5,10 +5,11 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel}
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::airplay::AirplaySource;
 use crate::mixer::MixerControl;
 use crate::sink::AudioSink;
-use crate::source::SourceFactory;
-use crate::status::{State, Status};
+use crate::source::{Source, SourceFactory};
+use crate::status::{AirplayInfo, AudioSource, State, Status};
 use crate::volume;
 
 /// The optional hardware-ceiling owner; None for the dev sinks.
@@ -37,7 +38,7 @@ impl Default for Tuning {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum Command {
     Play {
         playlist_url: String,
@@ -46,6 +47,13 @@ pub enum Command {
     Stop,
     Pause,
     Resume,
+    /// An AirPlay stream negotiated its sink: the session takes over the
+    /// pipeline. Sent by the bridge's sink factory.
+    AirplayStarted {
+        source: AirplaySource,
+    },
+    /// The AirPlay session is over (TEARDOWN / connection closed).
+    AirplayEnded,
 }
 
 /// What is (or was) playing. Kept across pause so resume can reconnect.
@@ -59,6 +67,12 @@ enum Session {
     Idle,
     Playing(Station),
     Paused(Station),
+    /// An AirPlay sender owns the pipeline; the preempted station (if any)
+    /// is remembered so the radio can come back afterwards.
+    Airplay {
+        source: AirplaySource,
+        remembered: Option<Station>,
+    },
 }
 
 /// Handle used by the HTTP server to control the player thread.
@@ -77,29 +91,40 @@ impl Player {
     }
 }
 
-/// Test convenience: no mixer, default tuning. Production goes through
-/// `spawn_with_tuning` so the mixer is threaded in.
+/// Test convenience: no mixer, default tuning, resume-radio on.
+/// Production goes through `spawn_with_tuning` so the mixer is threaded in.
 #[cfg(test)]
 pub fn spawn(
     status: Arc<Mutex<Status>>,
     sink: Box<dyn AudioSink>,
     source_factory: SourceFactory,
 ) -> Player {
-    spawn_with_tuning(status, sink, None, source_factory, Tuning::default()).0
+    spawn_with_tuning(status, sink, None, source_factory, Tuning::default(), true).0
 }
 
 /// Also returns the thread's join handle: the thread exits (closing the
-/// sink) when every `Player` handle is dropped.
+/// sink) when every `Player` handle is dropped. `resume_radio` is the
+/// end-of-AirPlay-session policy.
 pub fn spawn_with_tuning(
     status: Arc<Mutex<Status>>,
     sink: Box<dyn AudioSink>,
     mixer: Mixer,
     source_factory: SourceFactory,
     tuning: Tuning,
+    resume_radio: bool,
 ) -> (Player, std::thread::JoinHandle<()>) {
     let (tx, rx) = channel();
-    let handle =
-        std::thread::spawn(move || run(&rx, &status, sink, mixer, &source_factory, tuning));
+    let handle = std::thread::spawn(move || {
+        run(
+            &rx,
+            &status,
+            sink,
+            mixer,
+            &source_factory,
+            tuning,
+            resume_radio,
+        )
+    });
     (Player { tx }, handle)
 }
 
@@ -110,6 +135,7 @@ fn run(
     mut mixer: Mixer,
     source_factory: &SourceFactory,
     tuning: Tuning,
+    resume_radio: bool,
 ) {
     let mut session = Session::Idle;
     loop {
@@ -125,7 +151,7 @@ fn run(
                     tuning,
                 ) {
                     RetryEnd::Command(command) => {
-                        transition(command, Session::Playing(station), status)
+                        transition(command, Session::Playing(station), status, resume_radio)
                     }
                     RetryEnd::Fatal => {
                         set_stopped(status);
@@ -134,9 +160,26 @@ fn run(
                     RetryEnd::Disconnected => return,
                 }
             }
+            Session::Airplay {
+                mut source,
+                remembered,
+            } => match play_airplay(rx, status, sink.as_mut(), &mut mixer, &mut source) {
+                AirplayEnd::Command(command) => transition(
+                    command,
+                    Session::Airplay { source, remembered },
+                    status,
+                    resume_radio,
+                ),
+                AirplayEnd::Ended => end_airplay(remembered, status, resume_radio),
+                AirplayEnd::Fatal => {
+                    set_stopped(status);
+                    Session::Idle
+                }
+                AirplayEnd::Disconnected => return,
+            },
             idle_or_paused => {
                 let Ok(command) = rx.recv() else { return };
-                transition(command, idle_or_paused, status)
+                transition(command, idle_or_paused, status, resume_radio)
             }
         };
     }
@@ -192,8 +235,16 @@ fn play_with_retries(
 
 /// Applies a command to the current session. The only writer of pause/stop
 /// status transitions; `play()` itself sets `playing`.
-fn transition(command: Command, session: Session, status: &Mutex<Status>) -> Session {
+fn transition(
+    command: Command,
+    session: Session,
+    status: &Mutex<Status>,
+    resume_radio: bool,
+) -> Session {
     match command {
+        // The server refuses /play during an AirPlay session (409); if a
+        // Play races through anyway, the station wins and the abandoned
+        // bridge just drops the sender's audio.
         Command::Play {
             playlist_url,
             stream_url,
@@ -212,14 +263,50 @@ fn transition(command: Command, session: Session, status: &Mutex<Status>) -> Ses
                 set_paused(status);
                 Session::Paused(station)
             }
+            // Transport control belongs to the sender during AirPlay; the
+            // server refuses these, so arriving here is a no-op.
+            airplay @ Session::Airplay { .. } => airplay,
             Session::Idle => Session::Idle,
         },
         Command::Resume => match session {
             // From Playing this only happens when a Resume interrupted the
             // play loop; the pipeline was torn down, so just restart it.
             Session::Playing(station) | Session::Paused(station) => Session::Playing(station),
+            airplay @ Session::Airplay { .. } => airplay,
             Session::Idle => Session::Idle,
         },
+        Command::AirplayStarted { source } => {
+            // Preempt whatever plays and remember it; a new AirPlay stream
+            // (e.g. the sender re-negotiated) keeps the earlier memory.
+            let remembered = match session {
+                Session::Playing(station) | Session::Paused(station) => Some(station),
+                Session::Airplay { remembered, .. } => remembered,
+                Session::Idle => None,
+            };
+            Session::Airplay { source, remembered }
+        }
+        Command::AirplayEnded => match session {
+            Session::Airplay { remembered, .. } => end_airplay(remembered, status, resume_radio),
+            // The session already ended through the bridge (EOF); ignore.
+            other => other,
+        },
+    }
+}
+
+/// End-of-AirPlay policy: back to the remembered station, or idle.
+fn end_airplay(remembered: Option<Station>, status: &Mutex<Status>, resume_radio: bool) -> Session {
+    {
+        let mut status = status.lock().expect("status lock poisoned");
+        status.source = AudioSource::Radio;
+        status.airplay = None;
+        status.airplay_gain = 1.0;
+    }
+    match remembered {
+        Some(station) if resume_radio => Session::Playing(station),
+        _ => {
+            set_stopped(status);
+            Session::Idle
+        }
     }
 }
 
@@ -268,6 +355,8 @@ fn play(
     {
         let mut status = status.lock().expect("status lock poisoned");
         status.state = State::Playing;
+        status.source = AudioSource::Radio;
+        status.airplay = None;
         status.playlist_url = Some(station.playlist_url.clone());
         status.stream_url = Some(station.stream_url.clone());
         status.icy_title = None;
@@ -329,6 +418,98 @@ fn play(
     outcome
 }
 
+enum AirplayEnd {
+    Command(Command),
+    /// The bridge reported end of stream: the library dropped its sink.
+    Ended,
+    Fatal,
+    Disconnected,
+}
+
+/// Plays one AirPlay session until it ends, a command interrupts, or the
+/// sink fails. Unlike radio, there is no reconnect loop — the sender owns
+/// the session's lifetime.
+fn play_airplay(
+    rx: &Receiver<Command>,
+    status: &Mutex<Status>,
+    sink: &mut dyn AudioSink,
+    mixer: &mut Mixer,
+    source: &mut AirplaySource,
+) -> AirplayEnd {
+    // Same ceiling-first rule as the radio path: no verified ceiling, no
+    // audio — an AirPlay sender at slider-max must meet the same hardware
+    // cap as everything else.
+    if let Some(mixer) = mixer.as_mut() {
+        match mixer.assert_ceiling() {
+            Ok(()) => {
+                let mut status = status.lock().expect("status lock poisoned");
+                if status.mixer != "ok" {
+                    status.mixer = "ok".to_string();
+                }
+            }
+            Err(err) => {
+                eprintln!("radiod: mixer: {err}");
+                status.lock().expect("status lock poisoned").mixer = format!("error: {err}");
+                return AirplayEnd::Fatal;
+            }
+        }
+    }
+
+    let spec = source.spec();
+    {
+        let mut status = status.lock().expect("status lock poisoned");
+        status.state = State::Playing;
+        status.source = AudioSource::Airplay;
+        status.airplay = Some(AirplayInfo {
+            rate: spec.rate,
+            channels: spec.channels,
+        });
+        status.playlist_url = None;
+        status.stream_url = None;
+        status.icy_title = None;
+        status.icy_name = None;
+    }
+
+    if let Err(err) = sink.open(spec) {
+        eprintln!("radiod: cannot open audio sink: {err}");
+        return AirplayEnd::Fatal;
+    }
+
+    let mut buf = vec![0i16; CHUNK_SAMPLES];
+    let outcome = loop {
+        match rx.try_recv() {
+            Ok(command) => break AirplayEnd::Command(command),
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => break AirplayEnd::Disconnected,
+        }
+
+        let n = match source.read(&mut buf) {
+            Ok(0) => break AirplayEnd::Ended,
+            Ok(n) => n,
+            Err(err) => {
+                eprintln!("radiod: airplay source error: {err}");
+                break AirplayEnd::Ended;
+            }
+        };
+
+        // Master volume × the sender's slider; apply_gain clamps, so the
+        // combination can attenuate but never amplify.
+        let gain = {
+            let status = status.lock().expect("status lock poisoned");
+            volume::gain(status.volume, status.muted) * status.airplay_gain
+        };
+        volume::apply_gain(&mut buf[..n], gain);
+
+        if let Err(err) = sink.write(&buf[..n]) {
+            eprintln!("radiod: error writing to audio sink: {err}");
+            break AirplayEnd::Fatal;
+        }
+    };
+
+    sink.close();
+    outcome
+}
+
 fn set_stopped(status: &Mutex<Status>) {
     let mut status = status.lock().expect("status lock poisoned");
     status.state = State::Stopped;
@@ -336,6 +517,9 @@ fn set_stopped(status: &Mutex<Status>) {
     status.stream_url = None;
     status.icy_title = None;
     status.icy_name = None;
+    status.source = AudioSource::Radio;
+    status.airplay = None;
+    status.airplay_gain = 1.0;
 }
 
 /// Paused keeps the station URLs visible — that is the difference from
@@ -605,6 +789,7 @@ mod tests {
             None,
             factory,
             test_tuning(),
+            true,
         );
 
         player.send(Command::Play {
@@ -641,6 +826,7 @@ mod tests {
             None,
             factory,
             test_tuning(),
+            true,
         );
 
         player.send(Command::Play {
@@ -672,6 +858,7 @@ mod tests {
             None,
             factory,
             test_tuning(),
+            true,
         );
 
         player.send(Command::Play {
@@ -707,6 +894,7 @@ mod tests {
             None,
             factory,
             tuning,
+            true,
         );
 
         player.send(Command::Play {
@@ -743,6 +931,7 @@ mod tests {
             None,
             factory,
             tuning,
+            true,
         );
 
         player.send(Command::Play {
@@ -790,6 +979,7 @@ mod tests {
             None,
             factory,
             tuning,
+            true,
         );
 
         player.send(Command::Play {
@@ -924,6 +1114,7 @@ mod tests {
             Some(Box::new(mixer.clone())),
             sine_factory(),
             Tuning::default(),
+            true,
         );
 
         start_playing(&player, &status);
@@ -956,6 +1147,7 @@ mod tests {
             Some(Box::new(mixer.clone())),
             sine_factory(),
             Tuning::default(),
+            true,
         );
 
         player.send(Command::Play {
@@ -981,6 +1173,125 @@ mod tests {
         wait_for(|| status.lock().unwrap().state == State::Stopped);
     }
 
+    fn start_airplay(player: &Player, status: &Arc<Mutex<Status>>) -> crate::airplay::BridgeSink {
+        let (bridge_sink, source) = crate::airplay::bridge(44100, 2);
+        player.send(Command::AirplayStarted { source });
+        wait_for(|| status.lock().unwrap().source == AudioSource::Airplay);
+        bridge_sink
+    }
+
+    #[test]
+    fn airplay_preempts_the_station_and_the_radio_resumes_after() {
+        use openairplay2::AudioSink as _;
+
+        let status = playing_status("");
+        let sink = TestSink::default();
+        let (factory, opens) = counting_sine_factory();
+        let player = spawn(status.clone(), Box::new(sink.clone()), factory);
+        start_playing(&player, &status);
+        assert_eq!(*opens.lock().unwrap(), 1);
+
+        let mut bridge_sink = start_airplay(&player, &status);
+        {
+            let status = status.lock().unwrap();
+            assert_eq!(status.state, State::Playing);
+            assert_eq!(status.playlist_url, None, "station hidden during airplay");
+            let info = status.airplay.expect("airplay info");
+            assert_eq!((info.rate, info.channels), (44100, 2));
+        }
+
+        // Bridged PCM reaches the ordinary sink.
+        let mark = sink.samples.lock().unwrap().len();
+        bridge_sink.write(&[1000i16; 512]);
+        wait_for(|| {
+            let samples = sink.samples.lock().unwrap();
+            samples[mark.min(samples.len())..].iter().any(|s| *s != 0)
+        });
+
+        // Sender goes away: the library drops its sink, the bridge reports
+        // EOF, and the remembered station comes back (resume_radio = true).
+        drop(bridge_sink);
+        wait_for(|| status.lock().unwrap().source == AudioSource::Radio);
+        wait_for(|| status.lock().unwrap().state == State::Playing);
+        wait_for(|| *opens.lock().unwrap() == 2);
+        assert_eq!(
+            status.lock().unwrap().playlist_url.as_deref(),
+            Some("https://example.com/test.pls")
+        );
+        assert_eq!(status.lock().unwrap().airplay, None);
+
+        player.send(Command::Stop);
+        wait_for(|| status.lock().unwrap().state == State::Stopped);
+    }
+
+    #[test]
+    fn airplay_end_without_resume_radio_goes_idle() {
+        let status = playing_status("");
+        let sink = TestSink::default();
+        let (player, _) = spawn_with_tuning(
+            status.clone(),
+            Box::new(sink.clone()),
+            None,
+            sine_factory(),
+            Tuning::default(),
+            false,
+        );
+        start_playing(&player, &status);
+
+        let bridge_sink = start_airplay(&player, &status);
+        drop(bridge_sink);
+        wait_for(|| status.lock().unwrap().state == State::Stopped);
+        let status = status.lock().unwrap();
+        assert_eq!(status.source, AudioSource::Radio);
+        assert_eq!(status.playlist_url, None, "station is not resumed");
+    }
+
+    #[test]
+    fn airplay_sender_volume_scales_the_bridged_samples() {
+        use openairplay2::AudioSink as _;
+
+        let status = playing_status("initial_volume = 100");
+        let sink = TestSink::default();
+        let player = spawn(status.clone(), Box::new(sink.clone()), sine_factory());
+
+        let mut bridge_sink = start_airplay(&player, &status);
+        // Sender volume is shared state (set by the event task in
+        // production), read by the playback loop per chunk — a slider
+        // drag must not interrupt the session.
+        status.lock().unwrap().airplay_gain = 0.1;
+
+        let mark = sink.samples.lock().unwrap().len();
+        bridge_sink.write(&[i16::MAX; 2048]);
+        wait_for(|| {
+            let samples = sink.samples.lock().unwrap();
+            samples[mark.min(samples.len())..].iter().any(|s| *s != 0)
+        });
+        let samples = sink.samples.lock().unwrap();
+        let peak = samples[mark..].iter().map(|s| i32::from(*s).abs()).max();
+        let bound = (0.1 * f32::from(i16::MAX)) as i32 + 1;
+        let peak = peak.unwrap();
+        assert!(peak > 0 && peak <= bound, "peak {peak} vs bound {bound}");
+    }
+
+    #[test]
+    fn stop_during_airplay_silences_and_forgets_the_station() {
+        let status = playing_status("");
+        let sink = TestSink::default();
+        let player = spawn(status.clone(), Box::new(sink.clone()), sine_factory());
+        start_playing(&player, &status);
+
+        let _bridge_sink = start_airplay(&player, &status);
+        player.send(Command::Stop);
+        wait_for(|| status.lock().unwrap().state == State::Stopped);
+        let status = status.lock().unwrap();
+        assert_eq!(status.source, AudioSource::Radio);
+        assert_eq!(status.airplay, None);
+        assert_eq!(
+            status.playlist_url, None,
+            "no resume after an explicit stop"
+        );
+    }
+
     #[test]
     fn dropping_all_handles_stops_the_thread_and_closes_the_sink() {
         let status = playing_status("");
@@ -991,6 +1302,7 @@ mod tests {
             None,
             sine_factory(),
             Tuning::default(),
+            true,
         );
         start_playing(&player, &status);
 

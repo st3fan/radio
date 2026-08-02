@@ -10,6 +10,21 @@ pub enum State {
     Stopped,
 }
 
+/// Which producer owns the pipeline right now.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AudioSource {
+    Radio,
+    Airplay,
+}
+
+/// Details of the active AirPlay stream.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct AirplayInfo {
+    pub rate: u32,
+    pub channels: u16,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Status {
     pub state: State,
@@ -22,6 +37,15 @@ pub struct Status {
     /// Mixer ceiling health: "ok", "disabled" (null/wav sinks), or
     /// "error: ...". The website surfaces anything that isn't "ok"-ish.
     pub mixer: String,
+    /// Which producer owns the pipeline: the radio or an AirPlay session.
+    pub source: AudioSource,
+    /// Present while an AirPlay stream is active.
+    pub airplay: Option<AirplayInfo>,
+    /// The AirPlay sender's volume slider as a gain factor in `[0, 1]`,
+    /// multiplied into the pipeline gain only while AirPlay is the source.
+    /// Session state, not part of the API contract.
+    #[serde(skip)]
+    pub airplay_gain: f32,
 }
 
 impl Status {
@@ -35,6 +59,9 @@ impl Status {
             volume: config.initial_volume,
             muted: false,
             mixer: "disabled".to_string(),
+            source: AudioSource::Radio,
+            airplay: None,
+            airplay_gain: 1.0,
         }
     }
 }
@@ -58,7 +85,9 @@ mod tests {
                 "icy_name": null,
                 "volume": 50,
                 "muted": false,
-                "mixer": "disabled"
+                "mixer": "disabled",
+                "source": "radio",
+                "airplay": null
             })
         );
     }

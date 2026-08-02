@@ -25,3 +25,20 @@ control = "PCM"
 ceiling_db = -12.0
 #device = "hw:0"        # derived from audio_device when omitted
 #ceiling_percent = 40   # instead of ceiling_db, never both
+
+# The embedded AirPlay 2 receiver: pick this device from any Apple
+# device's AirPlay list. An AirPlay session preempts the radio (the
+# station resumes afterwards when resume_radio is on); the sender's
+# volume slider only ever attenuates, and the mixer ceiling above caps
+# everything in hardware. Needs the avahi-daemon service for discovery;
+# without it, radiod logs a warning and runs radio-only. The values
+# shown are the defaults.
+#[airplay]
+#enabled = true
+#name = "Radio"          # the name in the AirPlay picker
+#port = 7000
+#resume_radio = true
+# The receiver identity (keypair, created on first run) — senders
+# remember this receiver by it. The default lives in the systemd
+# StateDirectory and survives upgrades; only change it if you know why.
+#identity_path = "/var/lib/radiod/airplay-identity"

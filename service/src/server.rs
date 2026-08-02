@@ -11,7 +11,7 @@ use tokio::net::TcpListener;
 
 use crate::player::{Command, Player};
 use crate::pls::PlsError;
-use crate::status::{State, Status};
+use crate::status::{AudioSource, State, Status};
 
 /// Maximum accepted request body; our biggest body is one playlist URL.
 const MAX_BODY_BYTES: usize = 64 * 1024;
@@ -51,6 +51,11 @@ async fn route(method: &Method, url: &str, body: &str, app: &App) -> (u16, Strin
                 Ok(request) => request,
                 Err(err) => return (400, error_body(&format!("invalid request body: {err}"))),
             };
+            // The sender owns the pipeline during AirPlay; /stop is the
+            // local override, /play is refused.
+            if airplay_active(app) {
+                return (409, error_body("airplay session active"));
+            }
             match same_station_state(app, &request.playlist_url) {
                 // Already playing this playlist: no-op, don't interrupt.
                 Some(State::Playing) => return (200, status_body(app)),
@@ -83,22 +88,32 @@ async fn route(method: &Method, url: &str, body: &str, app: &App) -> (u16, Strin
             app.player.send(Command::Stop);
             (200, status_body(app))
         }
-        (&Method::POST, "/pause") => match current_state(app) {
-            State::Playing => {
-                app.player.send(Command::Pause);
-                (200, status_body(app))
+        (&Method::POST, "/pause") => {
+            if airplay_active(app) {
+                return (409, error_body("airplay session active"));
             }
-            State::Paused => (200, status_body(app)),
-            State::Stopped => (409, error_body("nothing is playing")),
-        },
-        (&Method::POST, "/resume") => match current_state(app) {
-            State::Paused => {
-                app.player.send(Command::Resume);
-                (200, status_body(app))
+            match current_state(app) {
+                State::Playing => {
+                    app.player.send(Command::Pause);
+                    (200, status_body(app))
+                }
+                State::Paused => (200, status_body(app)),
+                State::Stopped => (409, error_body("nothing is playing")),
             }
-            State::Playing => (200, status_body(app)),
-            State::Stopped => (409, error_body("nothing is playing")),
-        },
+        }
+        (&Method::POST, "/resume") => {
+            if airplay_active(app) {
+                return (409, error_body("airplay session active"));
+            }
+            match current_state(app) {
+                State::Paused => {
+                    app.player.send(Command::Resume);
+                    (200, status_body(app))
+                }
+                State::Playing => (200, status_body(app)),
+                State::Stopped => (409, error_body("nothing is playing")),
+            }
+        }
         (&Method::POST, "/volume") => {
             let request: VolumeRequest = match serde_json::from_str(body) {
                 Ok(request) => request,
@@ -141,6 +156,10 @@ fn same_station_state(app: &App, playlist_url: &str) -> Option<State> {
 
 fn current_state(app: &App) -> State {
     app.status.lock().expect("status lock poisoned").state
+}
+
+fn airplay_active(app: &App) -> bool {
+    app.status.lock().expect("status lock poisoned").source == AudioSource::Airplay
 }
 
 fn status_body(app: &App) -> String {
@@ -601,6 +620,55 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&response).unwrap();
         assert!(value["error"].as_str().unwrap().contains("cannot fetch"));
         assert_eq!(app.status.lock().unwrap().state, State::Stopped);
+    }
+
+    #[tokio::test]
+    async fn airplay_session_gates_transport_routes_with_409() {
+        let app = test_app(ok_resolver());
+        route(
+            &Method::POST,
+            "/play",
+            r#"{"playlist_url": "https://example.com/x.pls"}"#,
+            &app,
+        )
+        .await;
+        wait_for_state(&app, State::Playing);
+
+        // An AirPlay stream takes over the pipeline.
+        let (bridge_sink, source) = crate::airplay::bridge(44100, 2);
+        app.player.send(Command::AirplayStarted { source });
+        for _ in 0..500 {
+            if app.status.lock().unwrap().source == crate::status::AudioSource::Airplay {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        for path in ["/pause", "/resume"] {
+            let (code, response) = route(&Method::POST, path, "", &app).await;
+            assert_eq!(code, 409, "path {path}");
+            let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+            assert_eq!(value["error"], "airplay session active");
+        }
+        let (code, response) = route(
+            &Method::POST,
+            "/play",
+            r#"{"playlist_url": "https://example.com/y.pls"}"#,
+            &app,
+        )
+        .await;
+        assert_eq!(code, 409);
+        let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(value["error"], "airplay session active");
+
+        // The master volume stays available during AirPlay...
+        let (code, _) = route(&Method::POST, "/volume", r#"{"volume": 30}"#, &app).await;
+        assert_eq!(code, 200);
+        // ...and /stop remains the local override.
+        let (code, _) = route(&Method::POST, "/stop", "", &app).await;
+        assert_eq!(code, 200);
+        wait_for_state(&app, State::Stopped);
+        drop(bridge_sink);
     }
 
     #[tokio::test]

@@ -1,3 +1,4 @@
+mod airplay;
 mod config;
 mod icy;
 mod mixer;
@@ -192,8 +193,69 @@ async fn main() -> ExitCode {
         mixer,
         Box::new(make_source),
         player::Tuning::default(),
+        config.airplay.resume_radio,
     )
     .0;
+
+    if config.airplay.enabled {
+        // Identity problems are config-grade: fail fast, like any other
+        // startup misconfiguration. A missing Avahi, by contrast, only
+        // degrades: AirPlay stays dark and the radio still works.
+        let receiver = match openairplay2::Receiver::builder()
+            .name(config.airplay.name.clone())
+            .port(config.airplay.port)
+            .identity_path(config.airplay.identity_path.clone())
+            .build()
+        {
+            Ok(receiver) => receiver,
+            Err(err) => {
+                eprintln!(
+                    "radiod: airplay: cannot set up receiver identity at {}: {err}",
+                    config.airplay.identity_path.display()
+                );
+                return ExitCode::FAILURE;
+            }
+        };
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let event_player = player.clone();
+        let event_status = status.clone();
+        tokio::spawn(async move {
+            while let Some(event) = events_rx.recv().await {
+                match event {
+                    // Volume is shared state, not a command: slider drags
+                    // arrive as event bursts, and a command would interrupt
+                    // the playback loop (tearing down and reopening ALSA)
+                    // for every step. The loop reads the gain per chunk,
+                    // exactly like the website's master volume.
+                    openairplay2::Event::Volume { db } => {
+                        event_status
+                            .lock()
+                            .expect("status lock poisoned")
+                            .airplay_gain = airplay::db_to_gain(db);
+                    }
+                    openairplay2::Event::SessionEnded => {
+                        event_player.send(player::Command::AirplayEnded);
+                    }
+                    // SessionStarted is redundant with the sink factory;
+                    // pause/flush are already handled inside the library.
+                    _ => {}
+                }
+            }
+        });
+        let factory_player = player.clone();
+        let sink_factory = move |rate: u32, channels: u8| -> Box<dyn openairplay2::AudioSink> {
+            let (bridge_sink, source) = airplay::bridge(rate, channels);
+            factory_player.send(player::Command::AirplayStarted { source });
+            Box::new(bridge_sink)
+        };
+        let name = config.airplay.name.clone();
+        tokio::spawn(async move {
+            if let Err(err) = receiver.run(sink_factory, events_tx).await {
+                eprintln!("radiod: airplay receiver stopped: {err} (radio continues)");
+            }
+        });
+        println!("radiod: airplay: advertising as {name:?}");
+    }
     let app = Arc::new(server::App {
         status: status.clone(),
         player: player.clone(),

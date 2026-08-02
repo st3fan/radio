@@ -74,8 +74,12 @@ $channels = somafm_channels();
 // daemon-owned hardware mixer.
 $volume_percent = $status !== null ? (int) $status['volume'] : 50;
 
+$airplay_active = $status !== null && (string) ($status['source'] ?? 'radio') === 'airplay';
+
 $prompt = 'STANDBY';
-if ($status !== null && $status['state'] === 'playing') {
+if ($airplay_active) {
+    $prompt = 'AIRPLAY';
+} elseif ($status !== null && $status['state'] === 'playing') {
     $prompt = 'NOW PLAYING';
 } elseif ($status !== null && $status['state'] === 'paused') {
     $prompt = 'PAUSED';
@@ -119,7 +123,9 @@ if ($status !== null && $status['state'] === 'playing') {
 // station line, possibly empty) so radio.js can update it in place.
 $title = (string) ($status['icy_title'] ?? '');
 $title_dim = false;
-if ($title === '' && $status['state'] === 'stopped') {
+if ($title === '' && $airplay_active) {
+    $title = '— AIRPLAY —';
+} elseif ($title === '' && $status['state'] === 'stopped') {
     $title = '— NO SIGNAL —';
     $title_dim = true;
 }
@@ -135,7 +141,9 @@ if ($title === '' && $status['state'] === 'stopped') {
 </section>
 
 <section class="controls">
-<?php if ($status['state'] === 'playing'): ?>
+<?php if ($airplay_active): ?>
+<span class="dim">[AIRPLAY ACTIVE — the sender controls playback]</span>
+<?php elseif ($status['state'] === 'playing'): ?>
 <form method="post"><button name="action" value="pause">[PAUSE]</button></form>
 <?php elseif ($status['state'] === 'paused'): ?>
 <form method="post"><button name="action" value="resume">[RESUME]</button></form>
@@ -193,6 +201,8 @@ $genre = str_replace('|', ' · ', (string) ($channel['genre'] ?? ''));
 <td>
 <?php if ($is_current): ?>
 <span class="onair">[ON AIR]</span>
+<?php elseif ($airplay_active): ?>
+<span class="dim">[AIRPLAY]</span>
 <?php else: ?>
 <form method="post">
 <input type="hidden" name="channel" value="<?= h($id) ?>">
