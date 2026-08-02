@@ -19,11 +19,16 @@ While `source == "airplay"`:
 - The SomaFM-specific UI disappears entirely — no channel table, no
   disabled [AIRPLAY] rows, no "sender controls playback" note (the mode
   itself says it).
-- Volume controls stay: the clickable bar and nudges keep working (the
-  master volume is the speaker's volume; the sender's slider multiplies
-  into it as today).
-- The title line stays reserved for track metadata (empty with the
-  blinking cursor for now — see below); the station line shows what we
+- **No volume controls** (review decision): AirPlay volume belongs to
+  the sender; the whole volume line is hidden in this mode. Simplify
+  first, iterate later.
+- **A [STOP] button** (review decision): kills the AirPlay session
+  locally and returns to the SomaFM tuner (idle). Honest limitation:
+  this stops *our* playback — the protocol session stays up and the
+  sender keeps streaming into the void until it notices or the user
+  stops it there; a true sender-kick is a future openairplay2 feature.
+- The title line shows a dim placeholder (`— NO TRACK INFO —`) where
+  track metadata will land (see below); the station line shows what we
   *do* know: the negotiated stream, e.g. `44100 HZ · 2 CH · AAC`, from
   the `airplay {rate, channels}` status object.
 - The art box shows an **animated "air waves" mark** instead of the
@@ -42,8 +47,9 @@ openairplay2 library receives but does not parse or surface. Getting
 them is therefore an **upstream feature**: an
 `Event::Metadata { artist, album, title }` (and an artwork variant) in
 openairplay2, then threading them through radiod's status and this
-page. Out of scope here; the UI slots (title line, art box) are shaped
-so that lands as a drop-in later.
+page. Out of scope here — placeholders hold the slots, and a separate
+openairplay2 project will investigate what the controller actually
+sends (review decision).
 
 ## Phases
 
@@ -52,20 +58,22 @@ One stack: this plan as the bottom PR, one implementation PR on top.
 ### Phase 1 — the mode
 
 Template branches on `airplay_active` (already in the render context):
-subtitle, prompt, hidden channels section, stream-info station line
-(rate/channels formatted server-side), the SVG wave mark + CSS
-animation. The channels fetch is skipped for AirPlay renders (nothing
-uses it). Tests: the existing airplay render test becomes the mode
-test — asserts the subtitle, prompt, stream line, wave mark, volume
-form present, channel table and SomaFM strings absent; radio-mode
-renders unchanged.
+subtitle, prompt, hidden channels section and volume line, the [STOP]
+button (the existing stop action), stream-info station line
+(rate/channels formatted server-side), the metadata placeholder, the
+SVG wave mark + CSS animation. The channels fetch is skipped for
+AirPlay renders (nothing uses it). Tests: the existing airplay render
+test becomes the mode test — asserts the subtitle, prompt, placeholder,
+stream line, wave mark and [STOP]; channel table, volume bar and
+SomaFM strings absent; radio-mode renders unchanged.
 
 ## Acceptance criteria
 
 - Picking "Radio" from an Apple device flips the page into receiver
   mode within a poll (~2.5 s); ending the session flips it back —
   verified on muzak with a real sender.
-- Volume from the web works during a session; the waves animate in
-  every phosphor theme; reduced-motion users get a static mark.
+- [STOP] during a session silences the radio and returns the tuner UI;
+  the waves animate in every phosphor theme; reduced-motion users get a
+  static mark.
 - `cargo test`, `clippy`, `fmt` green; no new dependencies; no
   openairplay2 changes.
