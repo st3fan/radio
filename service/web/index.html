@@ -48,23 +48,15 @@ VOL [{% for i in range(1, 21) %}<button class="seg" name="volume" value="{{ i * 
 {% endif %}
 </section>
 
-<section class="controls">
+{# Transport lives on the sender side (channel list, AirPlay device);
+   the API keeps /pause, /resume, /stop, /mute for scripts. A paused
+   state set via the API still renders (RESUME prompt shows) even
+   though the UI cannot create it. #}
 {% if airplay_active %}
+<section class="controls">
 <span class="dim">[AIRPLAY ACTIVE — the sender controls playback]</span>
-{% elif state == "playing" %}
-<form method="post" action="/" hx-post="/" hx-target="#app" hx-select="#app" hx-swap="outerHTML"><button name="action" value="pause">[PAUSE]</button></form>
-{% elif state == "paused" %}
-<form method="post" action="/" hx-post="/" hx-target="#app" hx-select="#app" hx-swap="outerHTML"><button name="action" value="resume">[RESUME]</button></form>
-{% endif %}
-{% if state != "stopped" %}
-<form method="post" action="/" hx-post="/" hx-target="#app" hx-select="#app" hx-swap="outerHTML"><button name="action" value="stop">[STOP]</button></form>
-{% endif %}
-{% if muted %}
-<form method="post" action="/" hx-post="/" hx-target="#app" hx-select="#app" hx-swap="outerHTML"><button name="action" value="unmute">[UNMUTE]</button></form>
-{% else %}
-<form method="post" action="/" hx-post="/" hx-target="#app" hx-select="#app" hx-swap="outerHTML"><button name="action" value="mute">[MUTE]</button></form>
-{% endif %}
 </section>
+{% endif %}
 
 
 <section class="channels">
