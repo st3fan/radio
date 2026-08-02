@@ -85,6 +85,14 @@ merged history keeps its shape.
 - After a stack (or PR) merges, `gh stack sync --prune` brings `main` up to
   date and cleans up the merged branches.
 
+## Runbooks
+
+Operational procedures live in `runbooks/`. When asked to do a
+**release**, follow `runbooks/releasing.md` — it defines the steps, the
+failure procedure, and the autopilot arrangement (a release request is
+standing permission to run every step once the version number is
+agreed).
+
 ## Coding notes
 
 ### Rust (`service/`)
@@ -149,4 +157,5 @@ service/       Rust daemon (the binary is named radiod)
 service/web/   website templates + static assets (embedded at build time)
 notes/         long-lived notes and the overall plan
 plans/         per-step implementation plans (YYYYMMDD-NN-slug.md)
+runbooks/      operational procedures (releasing, ...)
 ```
