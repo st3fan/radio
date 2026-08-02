@@ -207,12 +207,19 @@ mod tests {
 
     #[test]
     fn unwritable_path_warns_once_and_never_persists() {
-        let path = Path::new("/nonexistent-root-dir/state.toml");
+        // The parent is a *file*, so the path is unwritable even as root —
+        // CI containers run as root, where absolute nonexistent paths are
+        // happily creatable (found by the v0.4.0 release run).
+        let blocker =
+            std::env::temp_dir().join(format!("radiod-state-blocker-{}", std::process::id()));
+        std::fs::write(&blocker, "not a directory").unwrap();
+        let path = blocker.join("state.toml");
         let mut last = None;
         let mut warned = false;
         let state = PersistedState { volume: Some(40) };
-        assert!(!save_if_changed(path, state, &mut last, &mut warned));
+        assert!(!save_if_changed(&path, state, &mut last, &mut warned));
         assert!(warned);
         assert_eq!(last, None, "a failed write must not update the baseline");
+        std::fs::remove_file(&blocker).ok();
     }
 }
