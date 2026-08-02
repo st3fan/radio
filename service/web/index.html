@@ -23,17 +23,20 @@
 </head>
 <body>
 
-<header class="term-head">
-{% if dev_hash %}<a class="quiet" href="https://github.com/st3fan/radio/commit/{{ dev_hash }}">RADIO DEV ({{ dev_hash }})</a>{% else %}<a class="quiet" href="https://github.com/st3fan/radio/releases/tag/v{{ version }}">RADIO {{ version }}</a>{% endif %}
-<span class="dim">{% if airplay_active %}OPENAIRPLAY RECEIVER{% else %}SOMAFM TUNER{% endif %}</span>
-</header>
-
 {# The whole app block polls every 2.5 s so everything converges — the
    now-playing text AND the [ON AIR] marker in the channel table (play
    commands are asynchronous; the response to a button press can still
    show the previous station for a moment). #}
 <div id="app" hx-get="/{{ sort_query }}" hx-select="#app" hx-target="this"
      hx-swap="outerHTML" hx-trigger="every 2.5s">
+
+{# The header lives inside the polled region: the mode subtitle must
+   flip when an AirPlay session starts while the page is open. #}
+<header class="term-head">
+{% if dev_hash %}<a class="quiet" href="https://github.com/st3fan/radio/commit/{{ dev_hash }}">RADIO DEV ({{ dev_hash }})</a>{% else %}<a class="quiet" href="https://github.com/st3fan/radio/releases/tag/v{{ version }}">RADIO {{ version }}</a>{% endif %}
+<span class="dim">{% if airplay_active %}OPENAIRPLAY RECEIVER{% else %}SOMAFM TUNER{% endif %}</span>
+</header>
+
 
 {% if error %}
 <p class="error">! ERROR: {{ error }}</p>
