@@ -6,10 +6,16 @@
 
 name: CI
 
+# Documentation-only changes (plans, notes, runbooks, READMEs) have
+# nothing for cargo to check.
 on:
   pull_request:
+    paths-ignore:
+      - "**.md"
   push:
     branches: [main]
+    paths-ignore:
+      - "**.md"
 
 defaults:
   run:
