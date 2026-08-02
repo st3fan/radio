@@ -11,6 +11,35 @@
     --glow: 0 0 6px rgba(53, 224, 107, 0.35);
 }
 
+/* The "t" easter egg cycles the tube: green (default), amber, white,
+   blue — all phosphors a CRT actually shipped with. */
+html[data-theme="amber"] {
+    --ground: #080503;
+    --phosphor: #ffb000;
+    --dim: #a87400;
+    --bright: #ffd75e;
+    --grid: #3b2a12;
+    --glow: 0 0 6px rgba(255, 176, 0, 0.35);
+}
+
+html[data-theme="white"] {
+    --ground: #060606;
+    --phosphor: #d0d0d0;
+    --dim: #8c8c8c;
+    --bright: #ffffff;
+    --grid: #2e2e2e;
+    --glow: 0 0 6px rgba(220, 220, 220, 0.3);
+}
+
+html[data-theme="blue"] {
+    --ground: #03050a;
+    --phosphor: #5ab2ff;
+    --dim: #2f6fae;
+    --bright: #c2e3ff;
+    --grid: #122b42;
+    --glow: 0 0 6px rgba(90, 178, 255, 0.35);
+}
+
 * { box-sizing: border-box; }
 
 html { background: var(--ground); }
@@ -69,7 +98,55 @@ body::after {
 
 /* ---- now playing ---- */
 
-.now { margin: 22px 0 4px; }
+.now {
+    margin: 22px 0 4px;
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+    /* The section is size-stable: the art box anchors the height and
+       the text lines reserve their space even when empty. */
+    min-height: 104px;
+}
+
+.now .art {
+    flex: none;
+    width: 96px;
+    height: 96px;
+    border: 1px solid var(--grid);
+    background: color-mix(in srgb, var(--grid) 25%, transparent);
+}
+
+.now .art img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    /* Phosphor tint: drain the color, then rotate sepia's amber into
+       the terminal green (--phosphor sits around hue 140). */
+    filter: grayscale(1) sepia(1) hue-rotate(90deg) saturate(1.6)
+        brightness(0.85) contrast(1.05);
+}
+
+/* Standby: SomaFM's lone DJ holds the frame, dimmed like an idle tube. */
+.now .art.empty img { opacity: 0.55; }
+
+/* The artwork glows in whatever phosphor the tube is running. */
+html[data-theme="amber"] .now .art img {
+    filter: grayscale(1) sepia(1) saturate(1.8) brightness(0.9) contrast(1.05);
+}
+
+html[data-theme="white"] .now .art img {
+    filter: grayscale(1) brightness(0.95) contrast(1.05);
+}
+
+html[data-theme="blue"] .now .art img {
+    filter: grayscale(1) sepia(1) hue-rotate(160deg) saturate(1.8)
+        brightness(0.85) contrast(1.05);
+}
+
+.now .nowtext { flex: 1; min-width: 0; }
+
+.now .station { min-height: 1.6em; }
 
 .now .prompt { letter-spacing: 0.1em; }
 
@@ -78,7 +155,16 @@ body::after {
     font-weight: 700;
     margin: 2px 0;
     letter-spacing: 0.02em;
-    text-wrap: balance;
+}
+
+/* One line, always: long titles and station names fade out at the edge
+   instead of wrapping and shoving the layout around. */
+.now .title,
+.now .station {
+    white-space: nowrap;
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 56px), transparent);
+    mask-image: linear-gradient(90deg, #000 calc(100% - 56px), transparent);
 }
 
 .now .cursor {
@@ -101,13 +187,13 @@ body.live .now .cursor {
 }
 
 .now .station { margin-bottom: 2px; }
+.now .title { min-height: 1.35em; }
 
 .now .vol { font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---- controls ---- */
 
-.controls,
-.volform {
+.controls {
     display: flex;
     align-items: center;
     gap: 4px 14px;
@@ -219,4 +305,35 @@ footer {
    not for people who prefer reduced motion. */
 @media (prefers-reduced-motion: reduce) {
     * { animation: none !important; transition: none !important; }
+}
+
+/* ---- quiet links: terminal text that happens to be clickable ---- */
+
+.quiet {
+    color: inherit;
+    text-decoration: none;
+}
+
+.quiet:hover {
+    text-decoration: underline;
+}
+
+/* ---- the transport + volume line ---- */
+
+.volline {
+    display: flex;
+    gap: 12px;
+    align-items: baseline;
+}
+
+.volline form { display: inline; }
+
+/* ---- the clickable volume bar ---- */
+
+.volbar .seg {
+    /* Indistinguishable from the text bar: no horizontal padding so the
+       blocks touch; the vertical touch-target trick stays. */
+    padding: 8px 0;
+    margin: -8px 0;
+    color: inherit;
 }

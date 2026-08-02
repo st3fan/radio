@@ -184,9 +184,23 @@ async fn read_body(body: Incoming) -> Result<String, String> {
 }
 
 fn respond(code: u16, content_type: &str, body: Vec<u8>) -> Response<Full<Bytes>> {
+    respond_cached(code, content_type, body, "no-store")
+}
+
+/// Without cache headers browsers cache heuristically — deployed CSS/JS
+/// changes then never reach open tabs. Assets say no-cache (revalidate:
+/// on a LAN, refetching a few small files per load is nothing); dynamic
+/// responses say no-store.
+fn respond_cached(
+    code: u16,
+    content_type: &str,
+    body: Vec<u8>,
+    cache_control: &str,
+) -> Response<Full<Bytes>> {
     Response::builder()
         .status(code)
         .header(hyper::header::CONTENT_TYPE, content_type)
+        .header(hyper::header::CACHE_CONTROL, cache_control)
         .body(Full::new(Bytes::from(body)))
         .expect("valid response")
 }
@@ -223,7 +237,9 @@ async fn handle(
                 .header(hyper::header::LOCATION, location)
                 .body(Full::new(Bytes::new()))
                 .expect("valid response"),
-            crate::web::Reply::Asset(content_type, bytes) => respond(200, content_type, bytes),
+            crate::web::Reply::Asset(content_type, bytes) => {
+                respond_cached(200, content_type, bytes, "no-cache")
+            }
             crate::web::Reply::NotFound => respond(
                 404,
                 "application/json",
@@ -845,6 +861,204 @@ mod tests {
 
         web(&Method::POST, "/", None, "action=stop", false, &app).await;
         wait_for_state(&app, State::Stopped);
+    }
+
+    #[tokio::test]
+    async fn website_transport_button_stops_and_replays_the_station() {
+        let app = test_app(ok_resolver());
+        // Fresh boot: nothing to stop, nothing remembered to play.
+        let crate::web::Reply::Html(_, html) = web(&Method::GET, "/", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        assert!(!html.contains(r#"value="pause">[STOP]"#));
+        assert!(!html.contains(r#"value="resume">[PLAY]"#));
+
+        web(
+            &Method::POST,
+            "/",
+            None,
+            "action=play&channel=groovesalad",
+            false,
+            &app,
+        )
+        .await;
+        wait_for_state(&app, State::Playing);
+        {
+            let mut status = app.status.lock().unwrap();
+            status.icy_title = Some("Some Song".to_string());
+        }
+        let crate::web::Reply::Html(_, html) = web(&Method::GET, "/", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        assert!(html.contains(r#"value="pause">[STOP]"#));
+        assert!(html.contains("Some Song"));
+
+        // STOP: station remembered, song title replaced by the bare
+        // blinking cursor, prompt flips to PAUSED, button flips to PLAY.
+        web(&Method::POST, "/", None, "action=pause", false, &app).await;
+        wait_for_state(&app, State::Paused);
+        let crate::web::Reply::Html(_, html) = web(&Method::GET, "/", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        assert!(html.contains("PAUSED"));
+        assert!(html.contains(r#"value="resume">[PLAY]"#));
+        assert!(!html.contains("Some Song"), "song title gone while stopped");
+        assert!(
+            html.contains(r#"<h1 class="title"><span class="cursor""#),
+            "empty title line keeps the cursor"
+        );
+
+        // PLAY: the remembered station reconnects.
+        web(&Method::POST, "/", None, "action=resume", false, &app).await;
+        wait_for_state(&app, State::Playing);
+        assert_eq!(
+            app.status.lock().unwrap().playlist_url.as_deref(),
+            Some("https://api.somafm.com/groovesalad130.pls")
+        );
+
+        web(&Method::POST, "/", None, "action=stop", false, &app).await;
+        wait_for_state(&app, State::Stopped);
+    }
+
+    #[tokio::test]
+    async fn website_shows_artwork_for_the_playing_station_only() {
+        let app = test_app(ok_resolver());
+        // Standby: the art box renders as an empty frame, no image.
+        let crate::web::Reply::Html(_, html) = web(&Method::GET, "/", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        assert!(html.contains(r#"class="art empty""#));
+        assert!(
+            html.contains("LoneDJsquare400.jpg"),
+            "the lone DJ holds the empty frame"
+        );
+
+        web(
+            &Method::POST,
+            "/",
+            None,
+            "action=play&channel=groovesalad",
+            false,
+            &app,
+        )
+        .await;
+        wait_for_state(&app, State::Playing);
+        let crate::web::Reply::Html(_, html) = web(&Method::GET, "/", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        // minijinja entity-escapes slashes in attributes; match on the
+        // slash-free part of the URL.
+        assert!(html.contains("groovesalad-400.jpg"), "largeimage preferred");
+        assert!(
+            !html.contains("LoneDJsquare400.jpg"),
+            "placeholder replaced"
+        );
+        // Only in the now-playing section: exactly one image on the page.
+        assert_eq!(html.matches("<img").count(), 1);
+
+        web(&Method::POST, "/", None, "action=stop", false, &app).await;
+        wait_for_state(&app, State::Stopped);
+    }
+
+    #[tokio::test]
+    async fn website_channel_sorting_is_server_side_and_sticky() {
+        let app = test_app(ok_resolver());
+        let page = |html: String| html;
+        let order = |html: &str| {
+            let defcon = html.find("DEF CON Radio").expect("defcon on page");
+            let groove = html.find("Groove Salad").expect("groove on page");
+            (defcon, groove)
+        };
+
+        // Default: listeners busiest-first, no indicators anywhere.
+        let crate::web::Reply::Html(_, html) = web(&Method::GET, "/", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        let (defcon, groove) = order(&html);
+        assert!(defcon < groove, "default is busiest-first");
+        assert!(html.contains("STATION</a>"), "no indicator until clicked");
+        assert!(!html.contains('▴') && !html.contains('▾'));
+
+        // Genre ascending flips the pair and shows the indicator; the
+        // chosen sort is baked into the poll URL and form targets.
+        let crate::web::Reply::Html(_, html) = web(
+            &Method::GET,
+            "/",
+            Some("sort=genre&dir=asc"),
+            "",
+            false,
+            &app,
+        )
+        .await
+        else {
+            panic!("expected html");
+        };
+        let html = page(html);
+        let (defcon, groove) = order(&html);
+        assert!(groove < defcon, "ambient sorts before electronica");
+        assert!(html.contains("GENRE ▴"));
+        assert!(html.contains("sort=genre"), "sort baked into the page");
+
+        // Listeners ascending: quietest first, v/^ tracks direction.
+        let crate::web::Reply::Html(_, html) = web(
+            &Method::GET,
+            "/",
+            Some("sort=listeners&dir=asc"),
+            "",
+            false,
+            &app,
+        )
+        .await
+        else {
+            panic!("expected html");
+        };
+        let (defcon, groove) = order(&html);
+        assert!(groove < defcon, "quietest first");
+        assert!(html.contains("LSNRS ▴"));
+
+        // Actions keep the chosen sort: HTMX response stays sorted, and
+        // the plain-form redirect carries it.
+        let crate::web::Reply::Html(_, html) = web(
+            &Method::POST,
+            "/",
+            Some("sort=genre&dir=asc"),
+            "action=mute",
+            true,
+            &app,
+        )
+        .await
+        else {
+            panic!("expected html");
+        };
+        assert!(html.contains("GENRE ▴"));
+        let crate::web::Reply::Redirect(location) = web(
+            &Method::POST,
+            "/",
+            Some("sort=genre&dir=asc"),
+            "action=unmute",
+            false,
+            &app,
+        )
+        .await
+        else {
+            panic!("expected redirect");
+        };
+        assert_eq!(location, "/?sort=genre&dir=asc");
+
+        // Nonsense params mean the default view, not an error.
+        let crate::web::Reply::Html(_, html) =
+            web(&Method::GET, "/", Some("sort=nope&dir=up"), "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        let (defcon, groove) = order(&html);
+        assert!(defcon < groove);
     }
 
     #[tokio::test]
