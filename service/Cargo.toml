@@ -4,6 +4,7 @@ version = "0.5.0"
 edition = "2024"
 rust-version = "1.97"
 description = "Internet radio daemon with an HTTP API and a hard volume cap"
+license = "MIT"
 
 [dependencies]
 # Only the libraries we use: avformat (format), avcodec (codec), and
