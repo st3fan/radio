@@ -215,7 +215,8 @@ more PRs (see CLAUDE.md for the workflow).
    CPU, flat memory over a soak.
 7. ✅ **Polish** — the Phosphor terminal UI (chosen from three rendered
    proposals), live now-playing via a status.php proxy + a tiny poller,
-   blinking-cursor heartbeat. Favorites/presets remain a future idea.
+   blinking-cursor heartbeat. (Favourites, then still "a future idea",
+   landed with `plans/20260802-05-favourites.md`.)
 
 ## Formerly open questions, answered along the way
 

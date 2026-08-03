@@ -8,32 +8,32 @@ Ordering is rough: the first few feel closest to "obviously worth doing".
 
 ---
 
-## Favorite stations
+## Favourites UX iteration
 
-**Why:** Seven clicks of scrolling to get back to Drone Zone every morning is
-silly. Also the natural home for a future physical button / rotary encoder:
-"favorite 1..4".
+**Status:** v1 shipped (`plans/20260802-05-favourites.md`): `f` toggles
+the playing station, a FAVOURITES section above CHANNELS, persisted as
+`[[favourites]]` source/id records in `state.toml`. The open questions
+from the original sketch were all answered there (record designed,
+insertion order, reinstall-proof via the state file).
 
-**Sketch:** Keep it in the website, not the daemon — `radiod` stays a dumb
-player that takes a playlist URL, which is what makes it testable. A small
-JSON file (`/var/lib/radio-website/favorites.json`, owned by the php-fpm
-user, created by the package postinst) plus a star/pin toggle on each channel
-row and a "Favorites" section pinned at the top of the page.
+**Deferred at review** — the v1 UX gaps, accepted knowingly:
 
-**Open questions:**
+- Not discoverable: nothing hints that `f` exists.
+- No remove affordance: un-favouriting means playing the station and
+  pressing `f` again — no control on the list itself.
+- Not usable on mobile: the iPhone PWA has no keyboard, so favourites
+  can only be added from a desktop browser.
 
-- Right now favorites can just be SomaFM channel ids, and the server keeps
-  resolving ids → `.pls` from its cached `channels.json`. The moment we add
-  other directories (below), a favorite needs a fuller record: source,
-  station id, display name, playlist URL, artwork URL. Worth designing that
-  record *now* even if v1 only ever stores SomaFM ids, so we don't have to
-  migrate the file later.
-- Ordering: manual drag is a lot of JS for this UI. Probably "order added",
-  with plain up/down buttons if it ever annoys us.
-- Do favorites survive a package reinstall? They must — so the file lives in
-  `/var/lib`, not under the docroot, and the package must not own it.
+**Sketch:** one fix likely covers all three — a small per-row toggle,
+tappable, self-explanatory, doubling as the remove control. **Hard
+constraint, learned:** a hover-`[X]` extra column was built and
+rejected at review — FAVOURITES and CHANNELS must keep the exact same
+table shape, so any toggle has to live inside an existing cell (e.g.
+sharing the [PLAY]/[ON AIR] column) rather than adding one. The `f`
+key stays as the shortcut. Still the natural home for the future
+physical buttons / rotary encoder ("favourite 1..4").
 
-**Effort:** small. Best next feature/effort ratio on this list.
+**Effort:** small.
 
 ---
 
