@@ -106,10 +106,10 @@ VOL [{% for i in range(1, 21) %}<button class="seg" name="volume" value="{{ i * 
    your list, in the order you added them — no sort links, F-numbers
    nodding at the physical preset buttons this may grow into. #}
 {% if favourites %}
-<section class="channels favs">
+<section class="channels">
 <div class="heading dim">&gt; FAVOURITES</div>
 <table>
-<tr><th>CH</th><th>STATION</th><th class="col-genre">GENRE</th><th class="num">LSNRS</th><th></th><th></th></tr>
+<tr><th>CH</th><th>STATION</th><th class="col-genre">GENRE</th><th class="num">LSNRS</th><th></th></tr>
 {% for channel in favourites %}
 <tr{% if channel.is_current %} class="playing"{% endif %}>
 <td>F{{ loop.index }}</td>
@@ -125,15 +125,6 @@ VOL [{% for i in range(1, 21) %}<button class="seg" name="volume" value="{{ i * 
 <button name="action" value="play">[PLAY]</button>
 </form>
 {% endif %}
-</td>
-<td>
-{# Hover-revealed remove; the station rejoins CHANNELS (one list
-   only). Hover is desktop-only — the mobile gap stays on the
-   deferred list. #}
-<form method="post" action="/{{ sort_query }}" hx-post="/{{ sort_query }}" hx-target="#app" hx-select="#app" hx-swap="outerHTML">
-<input type="hidden" name="channel" value="{{ channel.id }}">
-<button class="unfav" name="action" value="unfavourite" title="remove from favourites">[X]</button>
-</form>
 </td>
 </tr>
 {% endfor %}

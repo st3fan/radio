@@ -309,12 +309,6 @@ th:last-child, td:last-child { padding-right: 0; text-align: right; }
 tr.playing td { color: var(--bright); }
 tr.playing .onair { padding: 0 4px; white-space: nowrap; }
 
-/* The remove control on a favourites row: there on hover, invisible
-   otherwise (visibility, not display — the row never shifts). Also
-   shown while focused, so keyboard users are not locked out. */
-.favs .unfav { visibility: hidden; color: var(--dim); }
-.favs tr:hover .unfav, .favs .unfav:focus { visibility: visible; }
-
 .genre { color: var(--dim); }
 
 /* ---- footer ---- */

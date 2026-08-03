@@ -353,17 +353,6 @@ async fn handle_action(app: &App, body: &str, hx_request: bool, sort: Option<Sor
         "mute" => set_muted(app, true),
         "unmute" => set_muted(app, false),
         "favourite" => action_favourite(app).await,
-        // The [X] on a favourites row. Quiet no-op for an id that is not
-        // on the list (a stale page's button after the poll moved on).
-        "unfavourite" => {
-            let favourite = crate::status::Favourite::somafm(field("channel").unwrap_or(""));
-            app.status
-                .lock()
-                .expect("status lock poisoned")
-                .favourites
-                .retain(|f| *f != favourite);
-            Ok(())
-        }
         "volume" => match field("volume").and_then(|v| v.parse::<u8>().ok()) {
             Some(volume) if volume <= 100 => {
                 app.status.lock().expect("status lock poisoned").volume = volume;
