@@ -24,11 +24,14 @@ insertion order, reinstall-proof via the state file).
 - Not usable on mobile: the iPhone PWA has no keyboard, so favourites
   can only be added from a desktop browser.
 
-**Sketch:** one fix likely covers all three — a small per-row toggle
-in both tables (e.g. a `[+]`/`[-]` or star column), which is tappable,
-self-explanatory, and doubles as the remove control. The `f` key stays
-as the shortcut. Still the natural home for the future physical
-buttons / rotary encoder ("favourite 1..4").
+**Sketch:** one fix likely covers all three — a small per-row toggle,
+tappable, self-explanatory, doubling as the remove control. **Hard
+constraint, learned:** a hover-`[X]` extra column was built and
+rejected at review — FAVOURITES and CHANNELS must keep the exact same
+table shape, so any toggle has to live inside an existing cell (e.g.
+sharing the [PLAY]/[ON AIR] column) rather than adding one. The `f`
+key stays as the shortcut. Still the natural home for the future
+physical buttons / rotary encoder ("favourite 1..4").
 
 **Effort:** small.
 
