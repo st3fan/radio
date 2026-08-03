@@ -114,6 +114,33 @@ Imager dialog, first boot on a Pi, and the radio plays at
 choices, amd64-vs-arm64 build reality, exact `init_format` for
 trixie) land back in this document.
 
+#### Phase 1 findings (build done 2026-08-03; boot test pending)
+
+The build loop works end to end on the amd64 Debian 13 box:
+`pi-gen` **`arm64` branch** (defaults to trixie), Docker mode, with
+`qemu-user-static` + `binfmt-support` on the host — a full build takes
+~25 minutes, a `CONTINUE=1` resume seconds. Output:
+`radio-os.img.xz`, **676 MB**, verified by loop-mounting: hostname
+`radio`, radiod 0.5.0 (arm64 ELF) with its full dependency chain,
+service enabled, canonical config with the −20 dB ceiling in place.
+
+- **Confirmed: trixie RPi OS does first-boot customisation via
+  cloud-init** (`cloud-init 25.2 …+rpt` baked by stage2's
+  `04-cloud-init`) — our image inherits the exact machinery Imager
+  2.x's dialog writes to, so the phase-3 manifest declares the
+  cloud-init flavour of `init_format`.
+- Gotcha 1: `on_chroot` mounts a tmpfs **over the chroot's `/tmp`** —
+  files staged there for in-chroot use vanish; stage them in `/root`.
+- Gotcha 2: trixie's util-linux 2.41 makes `losetup -f` print
+  `/dev/loop0 (lost)` when the node is missing from the container's
+  `/dev`, which corrupts the device path in pi-gen's
+  `ensure_next_loopdev` before its own `mknod` repair; fixed with a
+  one-line suffix strip. **Worth an upstream pi-gen PR.**
+- Still owed by phase 1: the hardware acceptance test — flash a spare
+  card (Imager + local-json metadata for the customisation dialog),
+  first boot, radio plays at `http://radio.local`. Needs the spare
+  Pi/card from the open questions.
+
 ### Phase 2 — `image/` in the repo, repeatable build
 
 `image/build-image.sh` in the style of `service/build-deb.sh`
