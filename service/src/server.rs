@@ -1310,6 +1310,45 @@ mod tests {
         let channels_section = html.split_once("CHANNELS").unwrap().1;
         assert!(channels_section.contains("DEF CON Radio"));
         assert!(!channels_section.contains("Groove Salad"));
+        // Every favourites row carries the hover [X]; channel rows don't.
+        let favourites_section = html
+            .split_once("FAVOURITES")
+            .map(|(_, rest)| rest.split("CHANNELS").next().unwrap())
+            .unwrap();
+        assert!(favourites_section.contains(r#"value="unfavourite""#));
+        assert!(favourites_section.contains("[X]"));
+        assert!(!channels_section.contains("unfavourite"));
+
+        // The [X] removes without touching playback, and the station
+        // rejoins CHANNELS; an unknown id is a quiet no-op.
+        let crate::web::Reply::Html(_, html) = web(
+            &Method::POST,
+            "/",
+            None,
+            "action=unfavourite&channel=groovesalad",
+            true,
+            &app,
+        )
+        .await
+        else {
+            panic!("expected html");
+        };
+        assert!(!html.contains("FAVOURITES"));
+        assert!(html.contains("Groove Salad"), "back in the full list");
+        assert_eq!(app.status.lock().unwrap().state, State::Playing);
+        let crate::web::Reply::Redirect(location) = web(
+            &Method::POST,
+            "/",
+            None,
+            "action=unfavourite&channel=nonsense",
+            false,
+            &app,
+        )
+        .await
+        else {
+            panic!("expected redirect");
+        };
+        assert_eq!(location, "/");
 
         // An id the channel list stops serving renders as nothing but
         // stays on the list; an unknown source is skipped the same way —

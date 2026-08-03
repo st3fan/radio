@@ -19,16 +19,17 @@ insertion order, reinstall-proof via the state file).
 **Deferred at review** — the v1 UX gaps, accepted knowingly:
 
 - Not discoverable: nothing hints that `f` exists.
-- No remove affordance: un-favouriting means playing the station and
-  pressing `f` again — no control on the list itself.
-- Not usable on mobile: the iPhone PWA has no keyboard, so favourites
-  can only be added from a desktop browser.
+- Not usable on mobile: the iPhone PWA has no keyboard (no `f`) and no
+  hover (no `[X]`), so favourites can only be managed from a desktop
+  browser.
+- (Removal was fixed in review: an `[X]` appears on hover over a
+  favourites row — desktop-only by nature.)
 
-**Sketch:** one fix likely covers all three — a small per-row toggle
-in both tables (e.g. a `[+]`/`[-]` or star column), which is tappable,
-self-explanatory, and doubles as the remove control. The `f` key stays
-as the shortcut. Still the natural home for the future physical
-buttons / rotary encoder ("favourite 1..4").
+**Sketch:** one fix likely covers both — a small always-visible
+per-row toggle in both tables (e.g. a `[+]`/star column), tappable and
+self-explanatory. The `f` key and hover `[X]` stay as shortcuts. Still
+the natural home for the future physical buttons / rotary encoder
+("favourite 1..4").
 
 **Effort:** small.
 
