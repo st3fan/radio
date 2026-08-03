@@ -1,14 +1,19 @@
 # Plan: dependency optimization — a statically linked, minimal FFmpeg
 
 - **Date:** 2026-08-03
-- **Status:** rewritten twice after measurement. Stefan settled the open
-  product question: radiod must **play any stream URL**, not just the
-  SomaFM channels its own website lists. That decides the route — keep
-  FFmpeg, build it ourselves, minimally, and link it statically.
+- **Status:** rewritten after measurement; two open questions now settled
+  by Stefan.
+  - **Product:** radiod must **play any stream URL**, not just the SomaFM
+    channels its own website lists. That decides the decoder route — keep
+    FFmpeg, build it ourselves, minimally, and link it statically.
+  - **TLS:** depend on **system OpenSSL** rather than moving HTTPS into
+    Rust. 37 MB of dependencies is acceptable, and it buys back the
+    riskiest code in the plan (see "The TLS decision").
 - **Goal:** shrink what `radiod` drags onto the radio. Today the package
   pulls **139 extra packages / 156 MB** past a base Debian install, none
-  of which a radio needs. The target is a `radiod` whose only runtime
-  dependencies are `libasound2t64` and `libc6`.
+  of which a radio needs. The target is a `radiod` that depends on
+  `libasound2t64`, `libc6`, `libssl3t64` and `ca-certificates` — **12
+  packages / 37 MB, down from 144 / 181 MB.**
 
 ## Background: the measurement
 
@@ -211,7 +216,7 @@ tracking a Debian package through every security update.
 
 ## Design
 
-### The HTTPS problem, and why it splits the work
+### The TLS decision
 
 Stream URLs are https (`https://ice2.somafm.com/...`). With
 `--disable-autodetect` the build has no TLS backend — the protocol list
@@ -220,27 +225,30 @@ external library for TLS. Confirmed from FFmpeg's configure (line 7493)
 that OpenSSL 3.x only demands `--enable-version3` when GPL is enabled,
 so `--enable-openssl` is clean for our LGPL build.
 
-That gives two end states, and they make a natural phase boundary:
+There were two candidate end states:
 
 | end state | packages | size |
 |---|---|---|
 | today | 144 | 181 MB |
-| **static FFmpeg + system OpenSSL + ca-certificates** | **12** | **37 MB** |
-| **static FFmpeg + HTTPS done in Rust** | **5** | **25 MB** |
+| **static FFmpeg + system OpenSSL + ca-certificates — chosen** | **12** | **37 MB** |
+| static FFmpeg + HTTPS done in Rust — declined | 5 | 25 MB |
 
-The first is reachable with no Rust changes and already removes 132
-packages. The second removes the last three and is worth doing on its
-own merits, because it also deletes the `av_opt_get` ICY hack: ureq
-already brings rustls *and* `webpki-roots`, so the CA bundle is in the
-binary and no `ca-certificates` package is needed.
+**Decision: system OpenSSL.** The alternative would have saved three
+packages and 12 MB by fetching with ureq (whose rustls and
+`webpki-roots` put the CA bundle in the binary), but it required feeding
+libavformat through a custom `AVIOContext`. `ffmpeg-next` has no wrapper
+for that — no `AVIOContext`, no `avio_alloc_context` — so it meant
+hand-written FFI where a panic crossing the boundary is undefined
+behaviour. Trading 12 MB for deleting the riskiest code in the plan is a
+good trade on a box whose real constraint is 512 MB–1 GB of RAM, not
+disk.
 
-Doing HTTPS in Rust means feeding libavformat through a custom
-`AVIOContext`. **`ffmpeg-next` has no wrapper for this** — no
-`AVIOContext`, no `avio_alloc_context` — so it is FFI we write against
-`ffmpeg-sys`. That is the riskiest code in this plan (callbacks crossing
-FFI must not panic), which is why it is a separate, later phase rather
-than part of the first win. It is also genuinely optional: at 12
-packages we have already captured 132 of the 139.
+Two consequences worth stating plainly. FFmpeg keeps doing the network,
+so `pipeline.rs` needs **no changes at all** — reconnect stays
+libavformat's job and the `av_opt_get` ICY path stays as it is. And
+`libssl3t64` is a shared library on the system, so unlike the statically
+linked FFmpeg it gets security updates from Debian without us rebuilding
+— which for a TLS implementation is a feature, not a compromise.
 
 ### macOS must not change
 
@@ -255,6 +263,66 @@ using the system FFmpeg exactly as today.
 Fetch a released FFmpeg tarball by tag with a recorded sha256 — never a
 branch. The version and the full configure line live in the build script
 so the build is reproducible and reviewable.
+
+## Licensing
+
+Verified from the generated config rather than the configure banner:
+`CONFIG_GPL 0`, `CONFIG_NONFREE 0`, `CONFIG_VERSION3 0`, `CONFIG_GPLV3 0`,
+`CONFIG_LGPLV3 0`. Our FFmpeg is **LGPL 2.1 or later** and nothing else.
+FFmpeg's GPL parts (some x86 assembly, a batch of libavfilter filters,
+build/test tooling) are either disabled outright — we pass
+`--disable-avfilter` — or never enabled.
+
+**The LGPL does not require radiod to change licence.** §6 permits
+linking and distributing the combined work *"under terms of your choice,
+provided that the terms permit modification of the work for the
+customer's own use and reverse engineering for debugging such
+modifications."* MIT clears that bar trivially.
+
+What *does* change is which §6 sub-clause we satisfy. Dynamically
+linking Debian's shared libraries is §6(b), "use a suitable shared
+library mechanism", satisfied automatically with Debian carrying the
+source-distribution burden. Static linking takes 6(b) off the table.
+Distributing via GitHub releases fits **§6(d)** — offering access to
+copy from a designated place — so we offer equivalent access to the
+FFmpeg source. Because `build-ffmpeg.sh` pins an exact tag with a
+sha256 and records the configure line, and radiod's source is public, a
+user can rebuild and relink.
+
+Note that `libssl3t64` stays a **dynamically linked** system library, so
+OpenSSL raises no equivalent obligation.
+
+### Checklist
+
+- [ ] `LICENSE` (MIT) at the repo root, and `license = "MIT"` in
+      `service/Cargo.toml`. **This is a precondition, not a tidy-up:**
+      the repo currently grants no rights at all, and §6 requires that
+      our distribution terms *permit* modification for the customer's own
+      use. Landing separately, ahead of this stack.
+- [ ] `NOTICE.md` recording third-party material — mirroring
+      openairplay2's pattern — naming FFmpeg, its version and tag, the
+      configure line, and its LGPL 2.1+ status.
+- [ ] The .deb ships a real `/usr/share/doc/radiod/copyright`: today
+      `cargo-deb` is given only `copyright = "2026 Stefan Arentz"`. It
+      must carry the MIT text, a **prominent notice that FFmpeg is
+      statically linked and covered by the LGPL**, and a copy of
+      `COPYING.LGPLv2.1`. Both the notice and supplying the licence text
+      are unconditional §6 obligations, independent of sub-clause.
+- [ ] A pointer to the exact FFmpeg source (upstream tag + sha256 +
+      `build-ffmpeg.sh`) in the copyright file, satisfying §6(d).
+- [ ] **`build-ffmpeg.sh` asserts `CONFIG_GPL 0` after configure** and
+      fails the build otherwise. The licence is one `--enable-gpl` or
+      `--enable-libx264` away from flipping to GPL v2+, which *would*
+      force radiod to become GPL. Making it a build-time invariant stops
+      that arriving silently with a future codec addition.
+
+Also in the tree, unchanged by this work and non-blocking: `ffmpeg-next`
+and `ffmpeg-sys-next` are WTFPL; `symphonia` (already linked via
+`openairplay2`) is MPL-2.0, whose file-level copyleft obliges publishing
+changes to *its* files but does not reach radiod's own code.
+
+None of this is legal advice, but LGPL 2.1 §6 is specific and the shape
+is well-trodden.
 
 ## Phases
 
@@ -273,11 +341,19 @@ no code change.**
 
 New `service/build-ffmpeg.sh`: fetch the pinned, sha256-checked FFmpeg
 tarball, run the configure line above plus `--enable-openssl` and
-`--enable-protocol=https,tls`, `make install` into
-`service/target/ffmpeg/<triple>`. `build-deb.sh` exports `FFMPEG_DIR`
-before `cargo deb`; `Cargo.toml` gains the `static` feature on the .deb
-path and drops `depends` to `libasound2t64, libc6, libssl3t64,
-ca-certificates`. `setup-build.sh` loses the four `libav*-dev` packages.
+`--enable-protocol=https,tls`, assert `CONFIG_GPL 0` in the generated
+`config.h` (failing the build otherwise — see the licensing checklist),
+then `make install` into `service/target/ffmpeg/<triple>`.
+
+`build-deb.sh` exports `FFMPEG_DIR` before `cargo deb`; `Cargo.toml`
+gains the `static` feature on the .deb path and drops `depends` to
+`libasound2t64, libc6, libssl3t64, ca-certificates`.
+
+`setup-build.sh` **swaps** the four `libav*-dev` packages for
+`libssl-dev` — FFmpeg needs OpenSSL's headers at build time to honour
+`--enable-openssl`, and the cross list needs `libssl-dev:arm64` and
+`libssl-dev:armhf` alongside it in phase 2.
+
 No changes to `pipeline.rs`. Adds `notes/dependencies.md` recording the
 measurement method so this is re-checkable at each Debian release.
 **Result: 144 → 12 packages.**
@@ -291,27 +367,28 @@ Extend `build-ffmpeg.sh` with `--enable-cross-compile --arch --target-os
 paid on every release. All three .debs build and are verified with
 `dpkg -I` and `readelf -h`.
 
-### Phase 3 — do HTTPS in Rust, drop the TLS dependency
+### Phase 3 — licensing paperwork, cleanup and soak
 
-Fetch with ureq, de-frame `icy-metaint` into `icy.rs`, and feed
-libavformat through a custom `AVIOContext`. Deletes `format_option` and
-the `av_opt_get` ICY hack; reconnect-with-backoff moves to our code.
-`Depends` becomes `libasound2t64, libc6`. **Result: 12 → 5 packages.**
-Optional — evaluate after phase 1 lands.
+`NOTICE.md` and the .deb copyright file from the licensing checklist
+above — the `LICENSE` file lands separately ahead of this stack, and the
+`CONFIG_GPL` guard ships with `build-ffmpeg.sh` in phase 1. Plus
+`service/README.md`, and a soak on muzak before the stack merges.
 
-### Phase 4 — cleanup and soak
-
-Documentation, a `LICENSE` file (see risks), `service/README.md`, and a
-soak on muzak before the stack merges.
+*(An earlier draft had a phase here that moved HTTPS into Rust to reach
+5 packages. Declined — see "The TLS decision".)*
 
 ## Acceptance criteria
 
-- `dpkg -I radiod_*.deb` shows `Depends: libasound2t64, libc6` after
-  phase 3 (`libasound2t64, libc6, libssl3t64, ca-certificates` after
-  phase 1).
-- The apt simulation from an empty status resolves to **5 packages**,
+- `dpkg -I radiod_*.deb` shows `Depends: libasound2t64, libc6,
+  libssl3t64, ca-certificates`.
+- The apt simulation from an empty status resolves to **12 packages**,
   down from 144 — and no longer reaches libva/mesa/LLVM under
   Recommends.
+- `readelf -d` on the shipped binary shows no `libav*` `DT_NEEDED`
+  entries — the only shared libraries are libc, libm, libasound and the
+  OpenSSL pair.
+- The licensing checklist above is complete, and `build-ffmpeg.sh` fails
+  if `CONFIG_GPL` is ever non-zero.
 - muzak plays MP3 and HE-AAC streams (including a hand-entered non-SomaFM
   URL), shows ICY title changes on the website, and survives a
   deliberate network drop by reconnecting.
@@ -328,16 +405,15 @@ soak on muzak before the stack merges.
 
 ## Risks and open questions
 
-- **The repo has no `LICENSE` file.** Statically linking LGPL 2.1 code
-  carries a relinking obligation. The repo is public, which makes this
-  easy to satisfy in substance, but it should be explicit: add a
-  `LICENSE`, and state the FFmpeg version, configure line and licence in
-  the .deb's copyright file. This is a genuine obligation rather than a
-  preference.
-- **Custom AVIO FFI (phase 3) is the riskiest code here.** A panic
-  crossing the FFI boundary is undefined behaviour; the callbacks must
-  catch and convert.
+- **Licensing is a precondition, not a follow-up** — see the checklist
+  above. The `LICENSE` file must exist before we ship a statically
+  linked LGPL library, and the .deb copyright file must carry the notice
+  and licence text.
 - **muzak's actual installed state is unconfirmed** (phase 0).
+- **OpenSSL is a moving dependency.** `libssl3t64` is Debian's, so it
+  gets security updates for free — but a future Debian release renaming
+  the package (as the `t64` transition already did once) will need the
+  `depends` line revisited. `notes/dependencies.md` should say so.
 - **The codec set is a judgement call.** It covers what internet radio
   actually uses, but "any stream URL" has no closed definition; adding a
   decoder later is a one-line configure change and a rebuild, which is
