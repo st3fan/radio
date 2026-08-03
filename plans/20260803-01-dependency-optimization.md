@@ -28,7 +28,7 @@ apt-get install -s --no-install-recommends -o Dir::State::status=/dev/null \
 
 | resolution | packages | installed size |
 |---|---|---|
-| all six Depends, no recommends | 144 | 158 MB |
+| all six Depends, no recommends | 144 | 181 MB |
 | `libasound2t64` + `libc6` alone | 5 | 25 MB |
 | **attributable to the four libav\* names** | **139** | **156 MB** |
 | all six Depends, **with** recommends (apt's default) | 206 | 476 MB |
