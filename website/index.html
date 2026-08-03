@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="RADio — flash a Pi and have internet radio. Works with built-in audio or USB speakers and soundcards, and doubles as an OpenAirPlay receiver.">
+<title>RADio — flash a Pi and have internet radio</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="term-head">
+    <span>RADIO/1.0</span>
+    <span class="dim">
+        <button type="button" class="tube-btn" id="tube"
+            title="Cycle the tube">TUBE: GREEN</button> · SIGNAL: GOOD
+    </span>
+</header>
+
+<div class="hero">
+    <div class="prompt dim">$ WHAT'S PLAYING</div>
+    <h1 class="wordmark">RADio<span class="cursor"></span></h1>
+    <p class="tagline">Flash a Pi. Have internet radio.</p>
+    <p class="sub">A radio appliance for a small ARM board. No screen, no cloud, no accounts. It boots, it plays.</p>
+    <div class="cta">
+        <a class="btn primary" href="https://github.com/st3fan/radio/releases">Download</a>
+        <a class="btn" href="https://github.com/st3fan/radio/wiki">Documentation</a>
+        <a class="btn" href="https://github.com/st3fan/radio">Source code</a>
+    </div>
+</div>
+
+<section>
+    <h2 class="heading">HOW IT WORKS</h2>
+    <ol class="steps">
+        <li><div>Flash the image to an SD card.
+            <span class="cmd dim">$ dd if=radio.img of=/dev/sdX</span></div></li>
+        <li><div>Put it in the Pi, plug in speakers, power on.</div></li>
+        <li><div>Open the radio from any phone or laptop on your network. Pick a channel. That's it.</div></li>
+    </ol>
+</section>
+
+<section>
+    <h2 class="heading">SPEC SHEET</h2>
+    <table>
+        <tr><th>FEATURE</th><th></th><th></th></tr>
+        <tr>
+            <td class="k">INTERNET RADIO</td>
+            <td>Streams SomaFM and any .pls station, decoded on-device.</td>
+            <td class="ok"><span>YES</span></td>
+        </tr>
+        <tr>
+            <td class="k">AUDIO OUT</td>
+            <td>Built-in audio, or any USB speaker / soundcard ALSA can see.</td>
+            <td class="ok"><span>YES</span></td>
+        </tr>
+        <tr>
+            <td class="k">AIRPLAY</td>
+            <td>Shows up as an OpenAirPlay receiver — send it anything.</td>
+            <td class="ok"><span>YES</span></td>
+        </tr>
+        <tr>
+            <td class="k">PHONE REMOTE</td>
+            <td>Installable web app. Add it to your home screen.</td>
+            <td class="ok"><span>YES</span></td>
+        </tr>
+        <tr>
+            <td class="k">SUBSCRIPTION</td>
+            <td>There isn't one. It's your hardware and free software.</td>
+            <td class="ok"><span>NO</span></td>
+        </tr>
+    </table>
+</section>
+
+<div class="callout">
+    <p class="big">ALSO AN AIRPLAY RECEIVER</p>
+    <p>The same box that plays radio shows up on your network as an OpenAirPlay
+       target. Beam a podcast from your phone to the studio speakers without
+       touching a thing.</p>
+</div>
+
+<aside class="notice">
+    <p><span class="mark">! NOTICE:</span> <span class="name">RADio</span> is a personal passion project
+       and work in progress. Although used daily to enjoy music, it has rough
+       edges, bugs and missing features while we work toward a v1.0 release.
+       <a href="https://github.com/st3fan/radio/discussions">Join the
+       discussion</a> to leave feedback.</p>
+</aside>
+
+<footer>
+    <span>RADIO — FREE SOFTWARE FOR A SMALL COMPUTER</span>
+    <span class="dim">RUNS ON ARM64 RASPBERRY PI · ARMV7 BANANA PI · 512MB · PLENTY</span>
+</footer>
+
+<script src="radio.js"></script>
+
+</body>
+</html>
