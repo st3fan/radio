@@ -1,7 +1,9 @@
-# Plan: dependency optimization — getting FFmpeg off the radio
+# Plan: dependency optimization — a statically linked, minimal FFmpeg
 
 - **Date:** 2026-08-03
-- **Status:** proposed — awaiting review
+- **Status:** rewritten after measurement — the recommendation changed
+  (was "rewrite the pipeline in pure Rust", is now "keep FFmpeg, build it
+  ourselves, minimally, and link it statically")
 - **Goal:** shrink what `radiod` drags onto the radio. Today the package
   pulls **139 extra packages / 156 MB** past a base Debian install, none
   of which a radio needs. The target is a `radiod` whose only runtime
@@ -40,8 +42,9 @@ at: `libva2` recommends the VA-API driver stack, which brings
 no display and no GPU can end up carrying a Vulkan driver and a full
 LLVM, because its audio decoder is linked against a library that can
 also do hardware-accelerated video. Whether muzak actually has these
-depends on how the .deb was installed; **confirming that on muzak is the
-first task of phase 1.**
+depends on how the .deb was installed; **confirming that on muzak is
+still an open task** (it was not reachable by hostname from the machine
+this was measured on).
 
 ### Where the 156 MB comes from
 
@@ -63,7 +66,7 @@ The single largest package is `libcodec2-1.2` at 16 MB — a ham-radio
 speech codec. `libavcodec61` itself is 14 MB; `libx265-215` is 9 MB.
 Debian ships `libavcodec61` as one monolithic package, so **there is no
 way to depend on "just the audio decoders"**. The only lever is to stop
-linking against it.
+depending on Debian's build of it.
 
 (An earlier informal look at this suggested ~120 MB of *fonts*. That was
 an artifact of `apt-cache depends --recurse` walking every branch of an
@@ -75,8 +78,8 @@ it is just cairo/pango/glib rather than fonts.)
 
 All of it lives in one file, `service/src/pipeline.rs` (216 lines),
 behind the `Source` trait that `service/src/source.rs` already defines
-and that the player already takes as an injected `SourceFactory`. That
-seam is why this is worth attempting at all. The four jobs:
+and that the player already takes as an injected `SourceFactory`. The
+four jobs:
 
 1. **HTTP(S) fetch with reconnect** — `input_with_dictionary` with
    `reconnect`/`reconnect_streamed`/`reconnect_delay_max` options.
@@ -87,123 +90,226 @@ seam is why this is worth attempting at all. The four jobs:
 4. **Sample format conversion** — and note what the resampler is
    actually configured to do at `pipeline.rs:110-117`: input layout and
    rate are passed as *both* the source and destination. It is not
-   resampling. It converts planar float to packed s16 and nothing else.
+   resampling. It converts the decoder's native layout to packed s16.
 
-So `libswresample` is doing a job worth about thirty lines of Rust, and
-`libavcodec` is a 14 MB monolith standing in for two audio decoders.
+That last point was confirmed empirically: FFmpeg's fixed-point MP3
+decoder emits `s16p` and its float decoder emits `fltp`, and which one
+you get depends on how FFmpeg was configured. The conversion step is
+load-bearing and must stay whatever else changes.
+
+## The finding that reframes this plan
+
+FFmpeg does not have to come from Debian. `ffmpeg-sys-next` (which
+`ffmpeg-next` sits on) supports linking a **prebuilt FFmpeg** via the
+`FFMPEG_DIR` environment variable, and `ffmpeg-next` exposes a `static`
+feature (`static = ["ffmpeg-sys-next/static"]`) that turns the emitted
+link directives into `cargo:rustc-link-lib=static=avcodec` and friends.
+`FFMPEG_DIR` expects exactly the `lib/` + `include/` layout that
+`make install --prefix` produces.
+
+So we can configure FFmpeg ourselves, with only the pieces a radio
+needs, and link it into the binary. Measured on the Pi against FFmpeg
+8.1:
+
+```sh
+./configure --disable-everything --disable-autodetect \
+  --disable-programs --disable-doc --disable-shared --enable-static --disable-debug \
+  --disable-avdevice --disable-avfilter --disable-swscale --enable-swresample \
+  --enable-decoder=mp3,aac,aac_latm,aac_fixed,flac,vorbis \
+  --enable-demuxer=mp3,aac,mov,ogg,flac \
+  --enable-parser=mpegaudio,aac,aac_latm,flac,vorbis \
+  --enable-protocol=file,http,tcp
+```
+
+| | static archives | linked test binary | build time (Pi, 4 cores) | runtime deps |
+|---|---|---|---|---|
+| minimal, the configure line above | **3.5 MB** | **2.11 MB** | **51 s** | libc, libm |
+| full-featured static (see Option C) | 26.0 MB | 18.48 MB | 10 m 27 s | libc, libm |
+| today, Debian's shared libraries | — | — | — | 144 pkgs / 181 MB |
+
+Configure reports **LGPL version 2.1 or later** — no GPL contamination
+with this option set. A small C harness linked against the minimal
+archives decoded a real Groove Salad capture correctly (mp3, 44100 Hz,
+stereo, 18.76 seconds from a 300 KB sample) in a 2.11 MB binary whose
+entire `ldd` output is `libc` and `libm`.
+
+**156 MB of packages becomes about 2 MB inside the binary.**
 
 ## Options
 
-**Option A — replace the FFmpeg pipeline with a pure-Rust source.**
-Depends collapses to `libasound2t64, libc6`; 139 packages and 156 MB go
-away, along with the whole Recommends cliff. The pieces are largely
-already in the tree:
+**Option A — build a minimal FFmpeg ourselves and link it statically.**
+*Recommended.* Keeps FFmpeg's proven decoders and its network layer;
+`pipeline.rs` needs no changes at all in the first phase. Costs: we own
+an FFmpeg build script and a per-architecture build step, and we have to
+decide how HTTPS gets done (below). Numbers as measured above.
 
-- HTTP(S) — `ureq` is already a dependency and already brings rustls.
-  ICY needs the `Icy-MetaData: 1` request header and de-framing the
-  `icy-metaint` byte counter out of the body: a small, well-specified
-  loop feeding `icy.rs`, which already parses the strings.
-- Decode — **symphonia is already in `Cargo.lock`** (`symphonia-core`,
-  `symphonia-codec-aac`, `symphonia-metadata`), pulled in by
-  `openairplay2`. Adding `symphonia-codec-mp3` plus the mp3/adts readers
-  is additive, pure Rust, and does not touch the AirPlay path.
-- Format conversion — hand-written, and easier to unit-test than the
-  swresample call it replaces.
+**Option B — replace the pipeline with a pure-Rust source.** ureq (a
+dependency already) plus symphonia (already in `Cargo.lock` via
+`openairplay2`) behind the existing `Source` trait, with ICY de-framing
+written against `icy.rs`. This was the previous recommendation and it is
+still the only route to a *zero* extra dependency, no-C-build outcome.
+Against it: symphonia's AAC support is weakest exactly where SomaFM may
+need it (HE-AAC v2, SBR+PS), reconnect-with-backoff becomes our code
+rather than libavformat's, and pure-Rust MP3 decode on ARMv7 is an
+unmeasured CPU risk. Option A eliminates all three risks for about 2 MB
+of binary. Keep this in reserve.
 
-Risks, in the order I expect them to bite: symphonia's robustness on a
-live never-ending icecast stream (mid-stream corruption, servers that
-change bitrate); reconnect-with-backoff becoming our code rather than
-libavformat's; and CPU cost on ARM, since symphonia's MP3 decoder is
-pure Rust against FFmpeg's hand-tuned assembly. A Pi 4 has headroom to
-spare, an ARMv7 Banana Pi may not — that is a measurement, not a guess,
-and it gates the decision.
+**Option C — the `build` feature of `ffmpeg-sys-next`.** This is the
+`sdl2 = { features = ["bundled"] }` analogue and it does work, including
+cross-compilation (it passes `--arch`, `--target-os` and derives
+`--cross-prefix` from the `cc` crate, which matches the `CC_<triple>`
+variables `build-deb.sh` already exports). It also passes
+`--disable-autodetect`, which by itself removes every external library —
+the 34 MB of video codecs and 33 MB of graphics stack vanish by
+construction. **Rejected anyway**, for three reasons found by reading
+`build.rs`:
 
-**Option B — link a minimal FFmpeg statically.** `--disable-everything
---enable-decoder=mp3,aac ...` gives a few-hundred-KB libav with no
-runtime deps, and keeps FFmpeg's proven decoders and network layer. But
-it means building FFmpeg for three architectures in CI and on the build
-box, which is exactly the cross-compilation complexity that
-`plans/20260801-12-cross-compilation.md` deliberately designed away, plus
-LGPL static-linking obligations to get right. Better decoders, much
-worse build story.
+- It never passes `--disable-everything`, and there is no environment
+  variable for injecting extra configure flags. So it builds *every*
+  native FFmpeg decoder, demuxer, muxer and encoder: 26 MB of archives,
+  an 18.5 MB binary, 10.5 minutes per architecture.
+- It fetches with `git clone --depth=1 -b release/8.1` at build time — a
+  229 MB download per build, against a **moving branch** rather than a
+  pinned tag, so builds are not reproducible over time.
+- On the native path it adds `--extra-cflags=-march=native -mtune=native`.
+  Our release workflow builds **arm64 natively on `ubuntu-24.04-arm`**
+  (a Neoverse-class server CPU) and ships that .deb to muzak's
+  Cortex-A72. Tuning FFmpeg's hand-written assembly to the build
+  runner's CPU and shipping it to an older core risks SIGILL on the
+  radio.
 
-**Option C — trim the declared Depends.** Doesn't work: Debian's
-`libavcodec61` is monolithic, and all four libav\* names are genuinely
+`FFMPEG_DIR` avoids all three by giving us the configure line.
+
+**Option D — trim the declared Depends.** Doesn't work: Debian's
+`libavcodec61` is monolithic and all four libav\* names are genuinely
 linked. No lever here.
 
-**Recommendation: Option A**, with Option B held as the fallback if
-phase 2 shows symphonia can't keep up or can't stay stable on a live
-stream. The FFmpeg pipeline stays in the tree behind a cargo feature
-until Option A has run on the radio for a while, so the fallback is a
-rebuild rather than a revert.
+## Design of the recommended route
+
+### The HTTPS problem, and why it splits into two phases
+
+SomaFM's streams are https (`https://ice2.somafm.com/groovesalad-128-mp3`).
+With `--disable-autodetect` the minimal build has only `file, http, tcp`
+— FFmpeg needs an external library for TLS. Confirmed from FFmpeg's
+configure (line 7493) that OpenSSL 3.x only demands `--enable-version3`
+when GPL is enabled, so `--enable-openssl` is clean for our LGPL build.
+
+That gives two end states, and they make a natural phase boundary:
+
+| end state | packages | size |
+|---|---|---|
+| today | 144 | 181 MB |
+| **static FFmpeg + system OpenSSL + ca-certificates** | **12** | **37 MB** |
+| **static FFmpeg + HTTPS done in Rust** | **5** | **25 MB** |
+
+The first is reachable with essentially no Rust changes and already
+removes 132 packages. The second removes the last three and is worth
+doing on its own merits, because it also deletes the `av_opt_get` ICY
+hack: ureq already brings rustls *and* `webpki-roots`, so the CA bundle
+is in the binary and no `ca-certificates` package is needed.
+
+Doing HTTPS in Rust means feeding libavformat through a custom
+`AVIOContext`. **`ffmpeg-next` has no wrapper for this** — no
+`AVIOContext`, no `avio_alloc_context` — so it is FFI we write against
+`ffmpeg-sys`. That is a real cost and the riskiest code in this plan
+(callbacks crossing FFI must not panic), which is exactly why it is a
+separate, later phase rather than part of the first win.
+
+### macOS must not change
+
+`CLAUDE.md` requires `cargo test`/`clippy`/`fmt` to stay green on macOS,
+where FFmpeg comes from Homebrew via pkg-config. `FFMPEG_DIR` and the
+`static` feature are therefore **set only by the .deb build path**, not
+in `Cargo.toml`'s default features. Day-to-day Mac development keeps
+using the system FFmpeg exactly as today.
+
+### Pinning
+
+Fetch a released FFmpeg tarball by tag with a recorded sha256 — never a
+branch. The version and the full configure line live in the build script
+so the build is reproducible and reviewable.
 
 ## Phases
 
 Each phase is a PR stacked on this plan.
 
-### Phase 1 — measure, and prove the ceiling for the decision
+### Phase 1 — build a minimal FFmpeg and link it statically (native)
 
-No production code. Adds `notes/dependencies.md` recording the
-measurement method and the numbers above, so this is re-checkable at
-each Debian release. Confirms on muzak what is *actually* installed (the
-Recommends question above — `dpkg -l | grep -c '^ii'`, and whether
-`libllvm19`/`mesa-vulkan-drivers` are present). Then the gating
-measurement: a throwaway binary that decodes the real SomaFM MP3 and AAC
-streams with symphonia and reports CPU per wall-clock second on this
-Pi. If symphonia can't decode either stream, or costs more than roughly
-a third of one ARMv7 core, we stop and take Option B.
+New `service/build-ffmpeg.sh`: fetch the pinned, sha256-checked FFmpeg
+tarball, run the configure line above plus `--enable-openssl` and
+`--enable-protocol=https,tls`, `make install` into
+`service/target/ffmpeg/<triple>`. `build-deb.sh` exports `FFMPEG_DIR`
+before `cargo deb`; `Cargo.toml` gains the `static` feature on the .deb
+path and drops `depends` to `libasound2t64, libc6, libssl3t64,
+ca-certificates`. `setup-build.sh` loses the four `libav*-dev` packages.
+No changes to `pipeline.rs`. Also adds `notes/dependencies.md` recording
+the measurement method so this is re-checkable at each Debian release,
+and confirms the Recommends question on muzak. **Result: 144 → 12
+packages.**
 
-### Phase 2 — the pure-Rust source
+### Phase 2 — cross builds and CI
 
-`HttpSource` implementing `Source`: ureq fetch, ICY de-framing into
-`icy.rs`, symphonia demux+decode, s16 conversion, reconnect with
-backoff. Selected by a cargo feature, defaulting to the existing FFmpeg
-path so this PR changes no behaviour. Tests cover ICY de-framing against
-recorded stream bytes (the framing is where the fiddly off-by-ones live)
-and the format conversion.
+Extend `build-ffmpeg.sh` with `--enable-cross-compile --arch --target-os
+--cross-prefix` for arm64 and armhf, reusing the toolchains
+`setup-build.sh` already installs. Cache the built FFmpeg in CI keyed on
+(pinned version, triple, configure flags) so the ~1 minute native build
+is not paid on every release. All three .debs build and are verified
+with `dpkg -I` and `readelf -h`.
 
-### Phase 3 — flip the default and drop the dependency
+### Phase 3 — do HTTPS in Rust, drop the TLS dependency
 
-Make the pure-Rust source the default, put `FfmpegSource` behind an
-off-by-default feature, and cut `Cargo.toml`'s `depends` down to
-`libasound2t64, libc6`. `service/setup-build.sh` loses the four
-`libav*-dev` packages, native and cross — which also makes CI and the
-cross build meaningfully simpler, since bindgen no longer needs to parse
-FFmpeg's headers for the target architecture. Soak on muzak before
-merge.
+Fetch with ureq, de-frame `icy-metaint` into `icy.rs`, and feed
+libavformat through a custom `AVIOContext`. Deletes `format_option` and
+the `av_opt_get` ICY hack. Reconnect-with-backoff moves to our code.
+`Depends` becomes `libasound2t64, libc6`. **Result: 12 → 5 packages.**
 
-### Phase 4 — remove the FFmpeg path
+### Phase 4 — cleanup and soak
 
-Only after phase 3 has run on the radio for a stretch: delete
-`pipeline.rs`, the `ffmpeg-next` dependency and the feature flag. Split
-out so it is a separate, revertible decision.
+Documentation, a `LICENSE` file (see risks), `service/README.md`, and a
+soak on muzak before the stack merges.
 
 ## Acceptance criteria
 
-- `dpkg -I radiod_*.deb` shows `Depends: libasound2t64, libc6`.
+- `dpkg -I radiod_*.deb` shows `Depends: libasound2t64, libc6` after
+  phase 3 (`libasound2t64, libc6, libssl3t64, ca-certificates` after
+  phase 1).
 - The apt simulation from an empty status resolves to **5 packages**,
   down from 144 — and no longer reaches libva/mesa/LLVM under
   Recommends.
-- muzak plays every configured SomaFM stream (MP3 and AAC), shows ICY
-  title changes on the website, and survives a deliberate network drop
-  by reconnecting.
-- Decode CPU on the target board is measured and recorded, not assumed.
+- muzak plays every configured SomaFM stream (MP3 and AAC, including any
+  HE-AAC channel), shows ICY title changes on the website, and survives a
+  deliberate network drop by reconnecting.
+- The FFmpeg build is reproducible: pinned tag, recorded sha256, and the
+  configure line under review in the repo.
+- No `-march=native` reaches any shipped artifact.
 - The mixer ceiling and the `volume::gain()` clamp are untouched: the
-  new source produces s16 exactly like the old one and the player still
-  applies gain to every buffer it returns.
-- `cargo test`, `cargo clippy`, `cargo fmt` green on macOS and Linux.
+  source still produces packed s16 and the player still applies gain to
+  every buffer it returns.
+- `cargo test`, `cargo clippy`, `cargo fmt` green on macOS (Homebrew
+  FFmpeg, unchanged) and on Linux.
 
-## Open questions
+## Risks and open questions
 
-- **Which streams must work?** Everything in muzak's config, plus
-  whatever Stefan might add later. AAC+ (HE-AAC v2 / SBR+PS) is the one
-  to check specifically — symphonia's AAC support is weakest there, and
-  some SomaFM AAC streams use it.
-- ~~Does the AirPlay path share anything?~~ Settled while writing this:
-  it does not. `airplay.rs` never mentions `ffmpeg` or `pipeline.rs`
+- **The repo has no `LICENSE` file.** Statically linking LGPL 2.1 code
+  carries a relinking obligation. The repo is public, which makes this
+  easy to satisfy in substance, but it should be made explicit: add a
+  `LICENSE`, and state the FFmpeg version, configure line and license in
+  the .deb's copyright file. This is the one item that is a genuine
+  obligation rather than a preference.
+- **Custom AVIO FFI (phase 3) is the riskiest code here.** A panic
+  crossing the FFI boundary is undefined behaviour; the callbacks must
+  catch and convert. This is why it is isolated in its own phase behind
+  an already-shipped win.
+- **CI build time.** ~1 minute per native architecture, more when
+  cross-compiling; mitigated by caching, but it is new wall-clock on
+  every release.
+- **Which streams must work?** Everything in muzak's config. FFmpeg's
+  AAC decoder handles HE-AAC v2 properly, which is the main reason
+  Option A de-risks against Option B — but the actual channel list should
+  still be confirmed before phase 1.
+- ~~Does the AirPlay path share anything?~~ Settled: it does not.
+  `airplay.rs` never mentions `ffmpeg` or `pipeline.rs`
   (`openairplay2` hands us PCM), and `FfmpegSource` is referenced only
-  by `main.rs`, where it is wired in as the `SourceFactory`. Swapping the
-  radio source leaves AirPlay alone.
-- **Binary size.** Static symphonia decoders grow `radiod` itself. The
-  trade is overwhelmingly favourable, but phase 3 should record the
-  before/after so the claim is honest.
+  by `main.rs`, where it is wired in as the `SourceFactory`.
+- **Binary size** grows by ~2 MB. Recorded here so the trade is explicit;
+  it is overwhelmingly favourable against 156 MB of packages.
