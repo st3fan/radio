@@ -17,14 +17,25 @@
 
 set -eu
 
-# Pinned, never a branch — `release/8.1` moves under us and would make
-# builds unreproducible. Verified once against FFmpeg's release signing
-# key FCF986EA15E6E293A5644F10B4322F04D67658D8, whose fingerprint is
-# published on https://ffmpeg.org/download.html; the checksum below is
-# what pins it from here on. ffmpeg-sys-next's major.minor tracks
+# Pinned to a tag, never a branch — `release/8.1` moves under us and would
+# make builds unreproducible. ffmpeg-sys-next's major.minor tracks
 # FFmpeg's, so 8.1.x is what the 8.1.0 crate expects.
+#
+# Source is GitHub's tag archive rather than ffmpeg.org, because
+# ffmpeg.org resets every connection from GitHub Actions runners — six
+# consecutive retries, all "curl (35) Recv failure", while the same URL
+# downloads fine from a workstation. Provenance is not lost by this:
+# ffmpeg-8.1.2.tar.xz from ffmpeg.org was verified against FFmpeg's
+# release signing key FCF986EA15E6E293A5644F10B4322F04D67658D8 (whose
+# fingerprint is published on https://ffmpeg.org/download.html), and the
+# two trees were then compared file by file. They differ only in VCS
+# metadata (.gitignore/.gitattributes, present only in the archive) and
+# the VERSION file (present only in the release tarball, written back
+# below); no file present in both differs in content. To re-check after a
+# bump, repeat that comparison.
 FFMPEG_VERSION=8.1.2
-FFMPEG_SHA256=464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c
+FFMPEG_TAG=n8.1.2
+FFMPEG_SHA256=9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7
 
 ARCH="${1:?usage: build-ffmpeg.sh <amd64|arm64|armhf>}"
 cd "$(dirname "$0")"
@@ -72,13 +83,13 @@ CONFIGURE_FLAGS="--disable-everything --disable-autodetect
 
 PREFIX="$PWD/target/ffmpeg/$TRIPLE"
 WORK="$PWD/target/ffmpeg/src"
-TARBALL="$WORK/ffmpeg-$FFMPEG_VERSION.tar.xz"
-SRC="$WORK/ffmpeg-$FFMPEG_VERSION"
+TARBALL="$WORK/ffmpeg-$FFMPEG_TAG.tar.gz"
+SRC="$WORK/FFmpeg-$FFMPEG_TAG"
 
 # Any change to the version, the checksum or the flags invalidates the
 # tree — otherwise a stale build silently survives an edit to this file.
-STAMP=$(printf '%s\n%s\n%s\n' "$FFMPEG_VERSION" "$FFMPEG_SHA256" "$CONFIGURE_FLAGS" |
-    sha256sum | cut -d' ' -f1)
+STAMP=$(printf '%s\n%s\n%s\n%s\n' "$FFMPEG_VERSION" "$FFMPEG_TAG" "$FFMPEG_SHA256" \
+    "$CONFIGURE_FLAGS" | sha256sum | cut -d' ' -f1)
 
 if [ "$(cat "$PREFIX/.stamp" 2>/dev/null || true)" = "$STAMP" ]; then
     echo "build-ffmpeg.sh: $PREFIX is up to date"
@@ -88,14 +99,13 @@ fi
 mkdir -p "$WORK"
 
 if [ ! -f "$TARBALL" ]; then
-    echo "build-ffmpeg.sh: fetching ffmpeg-$FFMPEG_VERSION"
-    # ffmpeg.org resets connections often enough to fail a CI run (seen as
-    # curl 35 mid-transfer), and a release must not hinge on one flaky
-    # download. --retry-all-errors is what makes curl retry those; plain
-    # --retry only covers a narrower set of transient failures.
+    echo "build-ffmpeg.sh: fetching FFmpeg $FFMPEG_TAG"
+    # --retry-all-errors so a reset mid-transfer is retried; plain --retry
+    # covers a narrower set of failures and would give up on exactly the
+    # kind of blip a release must not hinge on.
     curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 \
         --connect-timeout 20 -o "$TARBALL.part" \
-        "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz"
+        "https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/$FFMPEG_TAG"
     mv "$TARBALL.part" "$TARBALL"
 fi
 
@@ -107,6 +117,12 @@ echo "$FFMPEG_SHA256  $TARBALL" | sha256sum -c - >/dev/null || {
 
 rm -rf "$SRC" "$PREFIX"
 tar -xf "$TARBALL" -C "$WORK"
+
+# The release tarball ships a VERSION file that the tag archive does not.
+# Without it configure falls back to `git describe`, finds no repository,
+# and stamps the build "unknown". Restoring it is the only content
+# difference between the two sources.
+printf '%s\n' "$FFMPEG_VERSION" >"$SRC/VERSION"
 
 # FFmpeg's own build is noisy with upstream warnings, so it goes to a log
 # — but on failure the log is what you need, so print the tail of it.
