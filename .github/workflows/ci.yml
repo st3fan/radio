@@ -53,6 +53,17 @@ jobs:
           workspaces: service
           key: ci
 
+      # radiod links its own minimal FFmpeg rather than Debian's
+      # libavcodec (see notes/dependencies.md), so there is nothing for
+      # pkg-config to find until this has run. service/.cargo/config.toml
+      # takes care of PKG_CONFIG_PATH from here.
+      #
+      # After rust-cache, deliberately: it restores service/target, and
+      # this writes into service/target/ffmpeg. Building first meant the
+      # restore landed on top and the prefix was gone by test time.
+      - name: Build the minimal FFmpeg
+        run: ./service/build-ffmpeg.sh amd64
+
       - name: Test
         working-directory: service
         run: cargo test

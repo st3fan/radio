@@ -26,6 +26,17 @@ command -v cargo-deb >/dev/null || {
 
 HOST=$(dpkg --print-architecture)
 
+# radiod links its own minimal FFmpeg instead of Debian's libavcodec61,
+# which would drag ~140 packages onto the radio. build-ffmpeg.sh installs
+# static .a files plus .pc files; putting that prefix first on
+# PKG_CONFIG_PATH is all ffmpeg-sys-next needs — it probes with
+# pkg-config, and since the prefix contains no .so the link is static.
+# PKG_CONFIG_PATH (not LIBDIR) so the system .pc files are still found:
+# the alsa crate needs libasound's.
+./build-ffmpeg.sh "$ARCH"
+FFMPEG_PREFIX="$PWD/target/ffmpeg/$TRIPLE"
+export PKG_CONFIG_PATH="$FFMPEG_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+
 if [ "$ARCH" = "$HOST" ]; then
     cargo deb
     echo "deb: $(ls target/debian/radiod_*_"$ARCH".deb)"

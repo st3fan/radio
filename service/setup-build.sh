@@ -17,23 +17,31 @@ set -eu
 SUDO=""
 [ "$(id -u)" -eq 0 ] || SUDO="sudo"
 
+# No libav*-dev: build-ffmpeg.sh builds the minimal FFmpeg radiod links
+# statically, from a pinned tarball. libssl-dev is what that build needs
+# for --enable-openssl (https). The tarball is gzip, which tar handles
+# without an extra package.
+#
+# nasm assembles FFmpeg's hand-written x86 SIMD. It is only used when the
+# target is x86, but it is listed unconditionally because the alternative
+# (--disable-x86asm) would ship a measurably slower amd64 build, and
+# because an arm64 host cross-compiling to amd64 needs it too. Nothing on
+# an ARM target uses it — those paths go through gas — which is why this
+# only ever surfaces on the amd64 leg.
 NATIVE_PACKAGES="build-essential pkg-config clang git ca-certificates curl
-    libavformat-dev libavcodec-dev libavutil-dev libswresample-dev
-    libasound2-dev"
+    nasm libssl-dev libasound2-dev"
 
-# The libav*/libasound dev packages are Multi-Arch: same, so the foreign
+# The libssl/libasound dev packages are Multi-Arch: same, so the foreign
 # copies co-install next to the native ones. pkgconf:<arch> provides the
 # <triplet>-pkg-config wrapper whose personality points at that arch's
 # multiarch paths. armhf is Debian's ARMv7 port (the Banana Pi — NOT the
 # ARMv6 Raspbian world of the retired Pi Zero W).
 CROSS_PACKAGES="crossbuild-essential-arm64 binutils-aarch64-linux-gnu
     pkgconf:arm64
-    libavformat-dev:arm64 libavcodec-dev:arm64 libavutil-dev:arm64
-    libswresample-dev:arm64 libasound2-dev:arm64
+    libssl-dev:arm64 libasound2-dev:arm64
     crossbuild-essential-armhf binutils-arm-linux-gnueabihf
     pkgconf:armhf
-    libavformat-dev:armhf libavcodec-dev:armhf libavutil-dev:armhf
-    libswresample-dev:armhf libasound2-dev:armhf"
+    libssl-dev:armhf libasound2-dev:armhf"
 
 case "${1:-native}" in
 native)

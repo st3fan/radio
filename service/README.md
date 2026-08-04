@@ -21,12 +21,25 @@ brew install ffmpeg pkg-config
 
 (libclang comes with the Xcode command line tools.)
 
-Debian (integration testing, real audio):
+Debian (integration testing, real audio) — two steps, because radiod does
+**not** use Debian's libavcodec. It links its own minimal FFmpeg instead,
+which keeps ~140 packages off the radio (see `notes/dependencies.md`):
 
 ```
-apt install clang pkg-config libavformat-dev libavcodec-dev \
-    libavutil-dev libswresample-dev libasound2-dev
+./setup-build.sh          # system packages: clang, pkg-config, libssl-dev, libasound2-dev
+./build-ffmpeg.sh <arch>  # builds the pinned minimal FFmpeg into target/ffmpeg/
 ```
+
+`<arch>` is `amd64`, `arm64` or `armhf`. **The second step is not
+optional**: without it `cargo build` fails with `unable to find library
+-lavcodec`. It only needs re-running when `build-ffmpeg.sh` itself
+changes — a stamp file makes it a no-op otherwise.
+
+You do not need to set `PKG_CONFIG_PATH`. `.cargo/config.toml` points it
+at `target/ffmpeg/host`, a symlink `build-ffmpeg.sh` maintains to the
+native build, and it defers to the environment if you have already set
+one. macOS is unaffected: that directory does not exist there, so
+pkg-config finds Homebrew's FFmpeg as before.
 
 ## Running
 
