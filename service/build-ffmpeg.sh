@@ -136,4 +136,14 @@ run make -C "$SRC" -j"$(nproc)"
 run make -C "$SRC" install
 
 printf '%s\n' "$STAMP" >"$PREFIX/.stamp"
+
+# A stable name for "the one a plain `cargo build` should link against".
+# .cargo/config.toml points PKG_CONFIG_PATH at target/ffmpeg/host, so once
+# this has been run, cargo test/clippy just work on Linux without anyone
+# having to know about PKG_CONFIG_PATH. Cross builds do not touch it —
+# build-deb.sh sets the variable explicitly for those.
+if [ "$ARCH" = "$HOST" ]; then
+    ln -sfn "$TRIPLE" "$PWD/target/ffmpeg/host"
+fi
+
 echo "build-ffmpeg.sh: installed FFmpeg $FFMPEG_VERSION (LGPL 2.1) into $PREFIX"

@@ -1,0 +1,14 @@
+# radiod links its own minimal FFmpeg (see build-ffmpeg.sh), which lives
+# in the target directory rather than in a system location, so pkg-config
+# has to be told where to look. Doing that here means a plain `cargo test`
+# or `cargo clippy` works on Linux once `./build-ffmpeg.sh <arch>` has been
+# run, instead of failing with "unable to find library -lavcodec" unless
+# you happen to know to set PKG_CONFIG_PATH yourself.
+#
+# `host` is a symlink build-ffmpeg.sh maintains to the native triple's
+# prefix. force = false so anything already in the environment wins —
+# build-deb.sh sets PKG_CONFIG_PATH explicitly for cross builds, and macOS
+# developers keep resolving Homebrew's FFmpeg through the default path
+# because this directory will not exist there.
+[env]
+PKG_CONFIG_PATH = { value = "target/ffmpeg/host/lib/pkgconfig", relative = true, force = false }
