@@ -63,15 +63,37 @@ the binary, so the only lever is to link a different binary.
 
 ### The one subset that *is* declinable: Recommends
 
-The mesa/LLVM cliff arrives through Recommends, not Depends:
-`libavcodec61` depends on `libva2`, `libva2` recommends `va-driver-all`,
-which depends on `mesa-va-drivers` and drags in **`mesa-vulkan-drivers`
-(70 MB)** and **`libllvm19` (118 MB)**. Recommends are optional by
-definition, so `--no-install-recommends` declines **62 packages /
-295 MB** with no code change at all. A .deb cannot dictate how apt
-treats its dependencies' Recommends, so this belongs in the install
-procedure (`notes/clean-install.md`) — see phase 0. **Confirming what
-muzak actually has installed is still outstanding**; it was not
+The empty-status framing above is the right way to size the libav\* cost,
+but it *overstates* the Recommends layer, because it counts recommends
+of base packages any real system already has. Measured again against a
+**real** RPi OS trixie arm64 dpkg status — a provisioned machine that
+simply lacks the av stack:
+
+| resolution (realistic) | packages | installed size |
+|---|---|---|
+| radiod's six Depends, apt's default | 113 | 360 MB |
+| the same with `--no-install-recommends` | 81 | 106 MB |
+| **avoidable by policy alone** | **32** | **254 MB** |
+
+254 MB is the number to care about, and four packages dominate it:
+**`libllvm19` (118 MB)**, **`mesa-vulkan-drivers` (70 MB)**,
+`mesa-libgallium` (34 MB) and `libz3-4` (26 MB). The doorway is
+`libva2`, whose `Recommends: va-driver-all | va-driver` pulls the Mesa
+stack in behind it. An internet radio with no display and no GPU can end
+up carrying a Vulkan driver and a full LLVM, because its audio decoder is
+linked against a library that can also do hardware-accelerated video.
+
+A .deb cannot dictate how apt treats its dependencies' Recommends, so
+this belongs in the install procedure (`notes/clean-install.md`) — see
+phase 0.
+
+This **corrects a claim in that note**, which recorded that
+`libavcodec61` "has 35 hard Depends and zero Recommends —
+`--no-install-recommends` would not slim the install; the closure is
+structural." The observation was right and the inference wrong: apt
+applies Recommends transitively across the whole closure, so it is
+`libva2`'s recommends that fire, not `libavcodec61`'s own. **Confirming
+what muzak actually has installed is still outstanding**; it was not
 reachable by hostname from the machine this was measured on.
 
 ## What radiod uses FFmpeg for
@@ -331,11 +353,12 @@ Each phase is a PR stacked on this plan.
 ### Phase 0 — decline Recommends
 
 Documentation only, and independent of everything below: record
-`--no-install-recommends` in `notes/clean-install.md`, and check what
-muzak actually has. If it was installed with apt's defaults it is
-carrying a Vulkan driver and LLVM right now, and reclaiming that is a
-larger win than the rest of this plan combined. **62 packages / 295 MB,
-no code change.**
+`--no-install-recommends` in `notes/clean-install.md`, correct that
+note's "the closure is structural" claim, and give the commands to audit
+muzak. If muzak was installed with apt's defaults it is carrying a
+Vulkan driver and LLVM right now, and reclaiming that is a larger win
+than the rest of this plan combined. **32 packages / 254 MB, no code
+change.**
 
 ### Phase 1 — build a minimal FFmpeg and link it statically (native)
 
