@@ -89,7 +89,12 @@ mkdir -p "$WORK"
 
 if [ ! -f "$TARBALL" ]; then
     echo "build-ffmpeg.sh: fetching ffmpeg-$FFMPEG_VERSION"
-    curl -fsSL --retry 3 -o "$TARBALL.part" \
+    # ffmpeg.org resets connections often enough to fail a CI run (seen as
+    # curl 35 mid-transfer), and a release must not hinge on one flaky
+    # download. --retry-all-errors is what makes curl retry those; plain
+    # --retry only covers a narrower set of transient failures.
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 \
+        --connect-timeout 20 -o "$TARBALL.part" \
         "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz"
     mv "$TARBALL.part" "$TARBALL"
 fi
