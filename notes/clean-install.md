@@ -10,10 +10,22 @@ package overlay. Findings from that install; the packages came from
 ```
 scp radiod_<v>_arm64.deb root@<host>:
 ssh root@<host>
-apt install ./radiod_<v>_arm64.deb
+apt install --no-install-recommends ./radiod_<v>_arm64.deb
 # then: edit /etc/radio/config.toml (see below) and
 systemctl restart radiod
 ```
+
+**Use `--no-install-recommends`.** It is worth 32 packages and 254 MB —
+see "The Recommends trap" below. The one Recommends radiod actually
+wants is `avahi-daemon`, for the AirPlay `_airplay._tcp` advertisement;
+install it explicitly:
+
+```
+apt install --no-install-recommends avahi-daemon
+```
+
+Without it radiod logs a warning and runs radio-only, so this is only
+needed if you want AirPlay.
 
 (Historical note: through v0.2.0 there was a second package,
 `radio-website_all.deb`, carrying a PHP site on lighttpd + php-fpm; the
@@ -34,6 +46,67 @@ closure — Mesa, LLVM, X11/Wayland client libs, VA-API, every codec —
 on a headless appliance. Several hundred MB of disk. Correct, just
 bulky; Debian ships one fat libavcodec build and there is no lean
 variant to depend on instead.
+
+## The Recommends trap
+
+Measured on RPi OS trixie arm64 against a real dpkg status (a
+provisioned machine simply lacking the av stack):
+
+| installing radiod's Depends | packages | installed size |
+|---|---|---|
+| `apt install` (apt's default: Recommends on) | 113 | 360 MB |
+| `apt install --no-install-recommends` | 81 | 106 MB |
+| **avoidable by policy alone** | **32** | **254 MB** |
+
+Four packages dominate that 254 MB: `libllvm19` (118 MB),
+`mesa-vulkan-drivers` (70 MB), `mesa-libgallium` (34 MB) and `libz3-4`
+(26 MB). A headless radio does not need a Vulkan driver or a full LLVM.
+
+The doorway is **`libva2`**, which `libavcodec61` depends on and which
+carries `Recommends: va-driver-all | va-driver` — that pulls
+`mesa-va-drivers` and the rest of Mesa in behind it.
+
+> **Correction.** An earlier revision of this note recorded that
+> `libavcodec61` "has 35 hard Depends and zero Recommends —
+> `--no-install-recommends` would not slim the install; the closure is
+> structural." The first half is true, the conclusion is not: apt
+> applies Recommends **transitively** across the whole closure, so it is
+> `libva2`'s recommends that fire, not `libavcodec61`'s own. Checking
+> only the top-level package's `Recommends:` field is what hid this.
+
+Reproduce either number with:
+
+```
+apt-get install -s [--no-install-recommends] \
+    libavformat61 libavcodec61 libavutil59 libswresample5 \
+    libasound2t64 libc6 | grep -c '^Inst '
+```
+
+### Auditing a box that was already installed the default way
+
+```
+# are the big offenders present?
+dpkg -l libllvm19 mesa-vulkan-drivers mesa-libgallium libz3-4 2>/dev/null | grep '^ii'
+# what is actually installed, largest first
+dpkg-query -Wf '${Installed-Size}\t${Package}\n' | sort -rn | head -20
+```
+
+If they are there, `apt autoremove` will *not* take them (they are
+recommended, so apt treats them as wanted). Remove the driver
+metapackage and let autoremove follow:
+
+```
+apt purge va-driver-all mesa-va-drivers
+apt autoremove --purge
+```
+
+Verify radiod still plays afterwards — this is a live appliance, so do
+it while you can watch it, not remotely at the end of the day.
+
+This whole section becomes moot once radiod links its own minimal
+FFmpeg (see `plans/20260803-01-dependency-optimization.md`), which drops
+the dependency list to `libasound2t64, libc6, libssl3t64,
+ca-certificates`.
 
 ## The one manual step: the audio config
 
@@ -87,8 +160,13 @@ Real releases bump the version, so apt behaves there.
   re-enumeration; the comes-back-loud correction path was verified
   separately on the Debian PC by moving the control externally.)
 - Dependency closure double-check: `libavcodec61` has 35 hard Depends
-  and zero Recommends — `--no-install-recommends` would not slim the
-  install; the closure is structural.
+  and zero Recommends of its own. ~~So `--no-install-recommends` would
+  not slim the install; the closure is structural.~~ **That inference
+  was wrong** — apt applies Recommends transitively, and `libva2` (one
+  of those 35) recommends the Mesa driver stack. See "The Recommends
+  trap" above: the policy is worth 32 packages / 254 MB. Whether muzak
+  itself carries them was not re-checked at the time of that
+  correction.
 - Footprint: ~190 MB used of 905 total while playing — comfortable on
   the 1 GB Pi 4. The board never builds anything; it only runs release
   packages.
