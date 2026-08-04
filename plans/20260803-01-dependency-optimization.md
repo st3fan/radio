@@ -390,6 +390,17 @@ Extend `build-ffmpeg.sh` with `--enable-cross-compile --arch --target-os
 paid on every release. All three .debs build and are verified with
 `dpkg -I` and `readelf -h`.
 
+**Correction found while implementing:** this plan (and `build-deb.sh`,
+and `setup-build.sh`) assumed cross builds require an **amd64** host.
+They do not. `crossbuild-essential-armhf` is available for arm64, so an
+arm64 Raspberry Pi can cross to armhf and therefore produce every .deb
+except amd64's. The host restriction is replaced with a capability check
+— look for the specific `<triplet>-gcc` and point at `./setup-build.sh
+cross` if it is missing — and `setup-build.sh` derives its target list
+from the host (amd64 → arm64 + armhf, arm64 → armhf) rather than
+refusing to run anywhere but amd64. This is what let phase 2 be
+developed and verified on the Pi itself.
+
 ### Phase 3 — licensing paperwork, cleanup and soak
 
 `NOTICE.md` and the .deb copyright file from the licensing checklist
