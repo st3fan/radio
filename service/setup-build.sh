@@ -20,8 +20,15 @@ SUDO=""
 # No libav*-dev: build-ffmpeg.sh builds the minimal FFmpeg radiod links
 # statically, from a pinned tarball. libssl-dev is what that build needs
 # for --enable-openssl (https); xz-utils unpacks the tarball.
+#
+# nasm assembles FFmpeg's hand-written x86 SIMD. It is only used when the
+# target is x86, but it is listed unconditionally because the alternative
+# (--disable-x86asm) would ship a measurably slower amd64 build, and
+# because an arm64 host cross-compiling to amd64 needs it too. Nothing on
+# an ARM target uses it — those paths go through gas — which is why this
+# only ever surfaces on the amd64 leg.
 NATIVE_PACKAGES="build-essential pkg-config clang git ca-certificates curl
-    xz-utils libssl-dev libasound2-dev"
+    xz-utils nasm libssl-dev libasound2-dev"
 
 # The libssl/libasound dev packages are Multi-Arch: same, so the foreign
 # copies co-install next to the native ones. pkgconf:<arch> provides the
