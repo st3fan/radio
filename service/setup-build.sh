@@ -36,12 +36,25 @@ NATIVE_PACKAGES="build-essential pkg-config clang git ca-certificates curl
 # <triplet>-pkg-config wrapper whose personality points at that arch's
 # multiarch paths. armhf is Debian's ARMv7 port (the Banana Pi — NOT the
 # ARMv6 Raspbian world of the retired Pi Zero W).
-CROSS_PACKAGES="crossbuild-essential-arm64 binutils-aarch64-linux-gnu
-    pkgconf:arm64
-    libssl-dev:arm64 libasound2-dev:arm64
-    crossbuild-essential-armhf binutils-arm-linux-gnueabihf
-    pkgconf:armhf
-    libssl-dev:armhf libasound2-dev:armhf"
+cross_packages_for() {
+    case "$1" in
+    arm64) echo "crossbuild-essential-arm64 binutils-aarch64-linux-gnu
+        pkgconf:arm64 libssl-dev:arm64 libasound2-dev:arm64" ;;
+    armhf) echo "crossbuild-essential-armhf binutils-arm-linux-gnueabihf
+        pkgconf:armhf libssl-dev:armhf libasound2-dev:armhf" ;;
+    esac
+}
+
+# Which targets a host can cross to. An amd64 box covers both ARM ports;
+# an arm64 Pi covers armhf (and builds arm64 natively), which is enough to
+# produce every .deb except amd64's from a Raspberry Pi.
+cross_targets_for() {
+    case "$1" in
+    amd64) echo "arm64 armhf" ;;
+    arm64) echo "armhf" ;;
+    *) return 1 ;;
+    esac
+}
 
 case "${1:-native}" in
 native)
@@ -51,17 +64,20 @@ native)
     ;;
 cross)
     host=$(dpkg --print-architecture)
-    if [ "$host" != "amd64" ]; then
-        echo "setup-build.sh: cross setup is for amd64 hosts (this is $host)" >&2
+    targets=$(cross_targets_for "$host") || {
+        echo "setup-build.sh: no cross targets known for host $host" >&2
         exit 2
-    fi
-    for arch in arm64 armhf; do
-        dpkg --print-foreign-architectures | grep -qx "$arch" || \
+    }
+    packages=$NATIVE_PACKAGES
+    for arch in $targets; do
+        dpkg --print-foreign-architectures | grep -qx "$arch" ||
             $SUDO dpkg --add-architecture "$arch"
+        packages="$packages $(cross_packages_for "$arch")"
     done
     $SUDO apt-get update
     # shellcheck disable=SC2086
-    $SUDO apt-get install -y $NATIVE_PACKAGES $CROSS_PACKAGES
+    $SUDO apt-get install -y $packages
+    echo "setup-build.sh: cross targets for $host: $targets"
     ;;
 *)
     echo "usage: $0 [native|cross]" >&2
