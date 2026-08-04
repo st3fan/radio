@@ -17,23 +17,23 @@ set -eu
 SUDO=""
 [ "$(id -u)" -eq 0 ] || SUDO="sudo"
 
+# No libav*-dev: build-ffmpeg.sh builds the minimal FFmpeg radiod links
+# statically, from a pinned tarball. libssl-dev is what that build needs
+# for --enable-openssl (https); xz-utils unpacks the tarball.
 NATIVE_PACKAGES="build-essential pkg-config clang git ca-certificates curl
-    libavformat-dev libavcodec-dev libavutil-dev libswresample-dev
-    libasound2-dev"
+    xz-utils libssl-dev libasound2-dev"
 
-# The libav*/libasound dev packages are Multi-Arch: same, so the foreign
+# The libssl/libasound dev packages are Multi-Arch: same, so the foreign
 # copies co-install next to the native ones. pkgconf:<arch> provides the
 # <triplet>-pkg-config wrapper whose personality points at that arch's
 # multiarch paths. armhf is Debian's ARMv7 port (the Banana Pi — NOT the
 # ARMv6 Raspbian world of the retired Pi Zero W).
 CROSS_PACKAGES="crossbuild-essential-arm64 binutils-aarch64-linux-gnu
     pkgconf:arm64
-    libavformat-dev:arm64 libavcodec-dev:arm64 libavutil-dev:arm64
-    libswresample-dev:arm64 libasound2-dev:arm64
+    libssl-dev:arm64 libasound2-dev:arm64
     crossbuild-essential-armhf binutils-arm-linux-gnueabihf
     pkgconf:armhf
-    libavformat-dev:armhf libavcodec-dev:armhf libavutil-dev:armhf
-    libswresample-dev:armhf libasound2-dev:armhf"
+    libssl-dev:armhf libasound2-dev:armhf"
 
 case "${1:-native}" in
 native)

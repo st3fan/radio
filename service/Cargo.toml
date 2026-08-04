@@ -7,7 +7,8 @@ description = "Internet radio daemon with an HTTP API and a hard volume cap"
 
 [dependencies]
 # Only the libraries we use: avformat (format), avcodec (codec), and
-# swresample. Keeps libavfilter/libavdevice off the Pi.
+# swresample — build-ffmpeg.sh does not build avfilter/avdevice/swscale
+# at all, so these features must stay in step with its configure line.
 ffmpeg-next = { version = "8.1.0", default-features = false, features = [
     "codec",
     "format",
@@ -40,6 +41,15 @@ alsa = "0.9"
 # .deb packaging for amd64/arm64/armhf via ./build-deb.sh. Depends are
 # pinned to trixie's package names (identical across the three arches);
 # cargo-deb's automatic shlibdeps is unreliable for cross builds.
+#
+# FFmpeg is not in this list: build-ffmpeg.sh builds a minimal one and
+# build-deb.sh points pkg-config at it, so it is linked statically.
+# Debian's libavcodec61 would cost ~140 packages (see
+# plans/20260803-01-dependency-optimization.md). What remains is OpenSSL,
+# which FFmpeg uses for https and which stays a shared library so it keeps
+# getting Debian's security updates, plus ca-certificates because
+# pipeline.rs sets tls_verify=1 and OpenSSL reads the system CA store.
+# zlib1g/libzstd1 are not listed: libssl3t64 already depends on them.
 [package.metadata.deb]
 name = "radiod"
 maintainer = "Stefan Arentz <stefan.arentz@gmail.com>"
@@ -50,7 +60,7 @@ e.g. SomaFM) to an ALSA device, controlled over an HTTP API on loopback. \
 The output level is hard-capped by the max_volume setting."""
 section = "sound"
 priority = "optional"
-depends = "libavformat61, libavcodec61, libavutil59, libswresample5, libasound2t64, libc6"
+depends = "libasound2t64, libc6, libssl3t64, ca-certificates"
 # AirPlay needs Avahi for the _airplay._tcp advertisement; without it the
 # receiver degrades to radio-only instead of failing, hence Recommends.
 recommends = "avahi-daemon"

@@ -80,6 +80,12 @@ impl FfmpegSource {
         // Ask the server for ICY metadata (the http default, but the icy()
         // implementation depends on it — be explicit).
         options.set("icy", "1");
+        // Verify TLS certificates. FFmpeg still defaults this off through
+        // libavformat 62 (FF_API_NO_DEFAULT_TLS_VERIFY), so https without it
+        // is encrypted but unauthenticated — anyone who can redirect the
+        // connection can feed the speakers. Verification uses OpenSSL's
+        // default paths, which is why the package depends on ca-certificates.
+        options.set("tls_verify", "1");
 
         let mut ictx = ffmpeg::format::input_with_dictionary(&url, options)?;
         let icy_name = format_option(&mut ictx, c"icy_metadata_headers")
