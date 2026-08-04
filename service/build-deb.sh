@@ -43,8 +43,18 @@ if [ "$ARCH" = "$HOST" ]; then
     exit 0
 fi
 
-if [ "$HOST" != "amd64" ]; then
-    echo "build-deb.sh: cross builds are only supported from amd64 hosts" >&2
+# Whether a cross build is possible is a question of what is installed,
+# not of the host's architecture — an amd64 box covers arm64 and armhf,
+# and an arm64 Pi covers armhf. Check for the toolchain and say how to get
+# it, rather than refusing by host arch.
+case "$ARCH" in
+amd64) CROSS_GCC=x86_64-linux-gnu-gcc ;;
+arm64) CROSS_GCC=aarch64-linux-gnu-gcc ;;
+armhf) CROSS_GCC=arm-linux-gnueabihf-gcc ;;
+esac
+if ! command -v "$CROSS_GCC" >/dev/null; then
+    echo "build-deb.sh: $CROSS_GCC not found (host is $HOST)." >&2
+    echo "  Run ./setup-build.sh cross to install the multiarch toolchains." >&2
     exit 2
 fi
 

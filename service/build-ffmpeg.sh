@@ -50,10 +50,30 @@ armhf) TRIPLE=armv7-unknown-linux-gnueabihf ;;
     ;;
 esac
 
+# Cross builds go through Debian's multiarch toolchains. Which host can
+# build which target is a question of what is installed, not of the host's
+# architecture: an amd64 box does arm64 and armhf, and an arm64 Pi does
+# armhf. setup-build.sh cross installs the right set for whichever host it
+# runs on.
+#
+# Deliberately no -mcpu/-mtune: the cross compiler's defaults are Debian's
+# baseline for the port (armhf is ARMv7-A + VFPv3-D16), and anything tuned
+# to the build machine would be a landmine — the .deb is built on one
+# machine and runs on another.
 HOST=$(dpkg --print-architecture)
+CROSS_FLAGS=""
 if [ "$ARCH" != "$HOST" ]; then
-    echo "build-ffmpeg.sh: cross builds are not wired up yet (host is $HOST)" >&2
-    exit 2
+    case "$ARCH" in
+    amd64) CROSS_PREFIX=x86_64-linux-gnu- FF_ARCH=x86_64 ;;
+    arm64) CROSS_PREFIX=aarch64-linux-gnu- FF_ARCH=aarch64 ;;
+    armhf) CROSS_PREFIX=arm-linux-gnueabihf- FF_ARCH=arm ;;
+    esac
+    if ! command -v "${CROSS_PREFIX}gcc" >/dev/null; then
+        echo "build-ffmpeg.sh: ${CROSS_PREFIX}gcc not found — run ./setup-build.sh cross" >&2
+        exit 2
+    fi
+    CROSS_FLAGS="--enable-cross-compile --cross-prefix=$CROSS_PREFIX
+        --arch=$FF_ARCH --target-os=linux"
 fi
 
 # What a radio actually has to decode. Deliberately wider than SomaFM —
@@ -88,8 +108,8 @@ SRC="$WORK/FFmpeg-$FFMPEG_TAG"
 
 # Any change to the version, the checksum or the flags invalidates the
 # tree — otherwise a stale build silently survives an edit to this file.
-STAMP=$(printf '%s\n%s\n%s\n%s\n' "$FFMPEG_VERSION" "$FFMPEG_TAG" "$FFMPEG_SHA256" \
-    "$CONFIGURE_FLAGS" | sha256sum | cut -d' ' -f1)
+STAMP=$(printf '%s\n%s\n%s\n%s\n%s\n' "$FFMPEG_VERSION" "$FFMPEG_TAG" \
+    "$FFMPEG_SHA256" "$CONFIGURE_FLAGS" "$CROSS_FLAGS" | sha256sum | cut -d' ' -f1)
 
 # A stable name for "the one a plain `cargo build` should link against".
 # .cargo/config.toml points PKG_CONFIG_PATH at target/ffmpeg/host, so once
@@ -153,7 +173,7 @@ run() {
 }
 
 # shellcheck disable=SC2086
-(cd "$SRC" && run ./configure --prefix="$PREFIX" $CONFIGURE_FLAGS)
+(cd "$SRC" && run ./configure --prefix="$PREFIX" $CONFIGURE_FLAGS $CROSS_FLAGS)
 
 # The licence is a build-time invariant, not a matter of trust: radiod is
 # MIT and links this statically, which LGPL 2.1 permits. Enabling a GPL

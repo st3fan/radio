@@ -104,3 +104,32 @@ never uses it. `tls_openssl.c` references `ff_udp_set_remote_addr` and
 `ff_udp_get_last_recv_addr` for its DTLS path, and without the udp
 protocol those objects are never compiled, so linking radiod fails on
 undefined symbols.
+
+### Cross builds
+
+`build-ffmpeg.sh <arch>` cross-compiles through Debian's multiarch
+toolchains (`--enable-cross-compile --cross-prefix --arch --target-os`),
+using the same prefix-per-triple layout, so `build-deb.sh` points
+pkg-config at `target/ffmpeg/<triple>` whichever architecture it is
+building.
+
+**Which host can build which target is a question of what is installed,
+not of the host's architecture.** `setup-build.sh cross` works out the
+targets for the host it runs on:
+
+| host | native | cross targets |
+|---|---|---|
+| amd64 | amd64 | arm64, armhf |
+| arm64 | arm64 | armhf |
+
+So an arm64 Raspberry Pi can produce every .deb except amd64's. Both
+`build-ffmpeg.sh` and `build-deb.sh` check for the specific
+`<triplet>-gcc` and point at `./setup-build.sh cross` when it is missing,
+rather than refusing by host architecture.
+
+No `-mcpu`/`-mtune` is passed anywhere. The cross compiler's defaults are
+Debian's baseline for the port (armhf is ARMv7-A with VFPv3-D16), which
+is what we want: the .deb is built on one machine and runs on another, so
+anything tuned to the builder is a latent SIGILL. This is also why
+`ffmpeg-sys-next`'s own `build` feature is not used — it passes
+`-march=native -mtune=native` on native builds.
