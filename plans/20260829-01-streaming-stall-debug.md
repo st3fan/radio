@@ -154,6 +154,30 @@ The flag + config knob, the `av_log` callback with rate limiting, and a
 README/config-example note. Smallest phase, last because it is the
 least likely to be needed.
 
+## Reproducing it deliberately (the network-interruption hunch)
+
+The working hunch is that a network interruption puts the app in this
+state. An interruption breaks the connection in one of two ways, which
+map straight onto hypotheses 1 and 2 — and both are reproducible on
+the Debian PC with the debug build playing a real stream:
+
+- **Silent break** (half-open connection — a NAT entry expiring, an AP
+  rebooting, a hop going dark): simulate with
+  `iptables -I INPUT -s <stream-ip> -j DROP` mid-playback (or pull the
+  Ethernet cable). TCP reports nothing, so with no `rw_timeout` the
+  read should block forever. Expected `/debug` signature: `stage:
+  reading` with ever-growing ages, no new events — and `/stop`
+  accepted but never processed.
+- **Clean break**: same rule with `-j REJECT --reject-with tcp-reset`.
+  The read errors out and the reconnect loop should take over.
+  Expected: `connect_attempts` climbing, backoff visible, recovery
+  when the rule is removed — unless the resolved stream URL has gone
+  stale, which is the permanent variant of hypothesis 2.
+
+If the DROP experiment reproduces the exact field symptom, the hunch
+is confirmed and the fix plan writes itself (`rw_timeout`, letting the
+existing reconnect loop do its job).
+
 ## Using it (the analysis procedure)
 
 When the radio goes quiet with the UI showing playing:
