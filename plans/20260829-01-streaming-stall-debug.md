@@ -154,29 +154,68 @@ The flag + config knob, the `av_log` callback with rate limiting, and a
 README/config-example note. Smallest phase, last because it is the
 least likely to be needed.
 
-## Reproducing it deliberately (the network-interruption hunch)
+## Enabling it
+
+Nothing to enable for the core: the heartbeat, the event ring, the
+stall monitor, and `GET /debug` (plus the `/debug` page) are **always
+on** — a stall is exactly the moment you cannot go back in time to
+flip a flag, so the evidence must already be there. Deploying the
+release that contains phases 1–2 *is* enabling it; from then on
+`http://radio/debug` works whenever the daemon runs.
+
+Only the phase-3 FFmpeg log capture is opt-in, two equivalent ways:
+
+- config: `debug = true` in `/etc/radiod/config.toml`, then
+  `systemctl restart radiod`; or
+- a systemd drop-in adding `--debug` to `ExecStart`
+  (`systemctl edit radiod`), for turning it on without touching the
+  config.
+
+Both get documented in `config.toml.example` and the README as part
+of phase 3.
+
+## Test scenarios (the network-interruption hunch, and the rest)
 
 The working hunch is that a network interruption puts the app in this
 state. An interruption breaks the connection in one of two ways, which
-map straight onto hypotheses 1 and 2 — and both are reproducible on
-the Debian PC with the debug build playing a real stream:
+map straight onto hypotheses 1 and 2. Run these on the Debian PC (or
+muzak, at a conservative volume) with the debug build playing a real
+stream, watching `/debug` throughout; `<stream-ip>` is the address in
+`stream_url` (or resolve the host):
 
-- **Silent break** (half-open connection — a NAT entry expiring, an AP
-  rebooting, a hop going dark): simulate with
-  `iptables -I INPUT -s <stream-ip> -j DROP` mid-playback (or pull the
-  Ethernet cable). TCP reports nothing, so with no `rw_timeout` the
-  read should block forever. Expected `/debug` signature: `stage:
-  reading` with ever-growing ages, no new events — and `/stop`
-  accepted but never processed.
-- **Clean break**: same rule with `-j REJECT --reject-with tcp-reset`.
-  The read errors out and the reconnect loop should take over.
-  Expected: `connect_attempts` climbing, backoff visible, recovery
-  when the rule is removed — unless the resolved stream URL has gone
-  stale, which is the permanent variant of hypothesis 2.
+1. **Silent break** (half-open connection — a NAT entry expiring, an
+   AP rebooting, a hop going dark):
+   `iptables -I INPUT -s <stream-ip> -j DROP` mid-playback. TCP
+   reports nothing, so with no `rw_timeout` the read should block
+   forever. Expected: audio stops within the ALSA buffer (~0.5 s +
+   whatever FFmpeg buffered), `stage: reading` with ever-growing ages,
+   no new events, the stall monitor line in the journal — and `/stop`
+   accepted (200) but never processed. Clean up:
+   `iptables -D INPUT -s <stream-ip> -j DROP` (does playback resume by
+   itself? Note the answer — it tells us whether the socket ever
+   wakes).
+2. **Physical variant of 1**: pull the Ethernet cable (or take the
+   Wi-Fi AP down) for a few minutes, then restore it. This is the
+   honest version of what the field failure probably is.
+3. **Clean break**: as scenario 1 but
+   `-j REJECT --reject-with tcp-reset`. The read errors out and the
+   reconnect loop should take over. Expected: `connect_attempts`
+   climbing, the backoff visible, `reconnecting to …` journal lines,
+   recovery once the rule is removed.
+4. **Stale stream URL** (permanent variant of hypothesis 2): while
+   stopped, note a `stream_url` from an earlier session that no longer
+   works (or block only DNS), play, and confirm `/debug` shows the
+   endless-retry signature with the actual error text.
+5. **DAC interruption** (hypothesis 3): unplug and replug the USB DAC
+   mid-playback. Expected: either a sink error (fatal, state drops to
+   `stopped` — correct today) or a wedged `stage: writing` — this one
+   is genuinely unknown, which is why it's on the list.
 
-If the DROP experiment reproduces the exact field symptom, the hunch
-is confirmed and the fix plan writes itself (`rw_timeout`, letting the
-existing reconnect loop do its job).
+Each scenario's expected `/debug` signature doubles as a test of the
+debug mode itself: if a scenario stalls audio and `/debug` cannot say
+where, the debug mode is incomplete. If scenario 1 or 2 reproduces the
+exact field symptom, the hunch is confirmed and the fix plan writes
+itself (`rw_timeout`, letting the existing reconnect loop do its job).
 
 ## Using it (the analysis procedure)
 
