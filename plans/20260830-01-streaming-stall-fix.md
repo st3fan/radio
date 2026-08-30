@@ -142,6 +142,52 @@ same stall threshold, tunable.
 
 Small, last, easy to drop.
 
+## Verifying the fix: the silent-break scenario, before and after
+
+This is the primary before/after check — the scenario that confirmed the
+cause is the scenario that confirms the fix. It is a manual bench test
+(a real socket going quiet is what a unit test cannot fake); run it on
+the dev Pi or the Debian PC with a debug build playing a real stream,
+using the tooling already in `runbooks/stall-tests/`. Capture the
+`/debug` output at each step in the phase-1 PR as the evidence.
+
+Setup (same for both runs):
+
+1. Start radiod with `--debug` and play a station; in another terminal
+   run `runbooks/stall-tests/watch-debug.sh`.
+2. Note `samples_written` is climbing and `stage` alternates
+   reading/writing — audio is flowing.
+
+**Before the fix** (build from `main`, or with `rw_timeout` unset) —
+establishes the wedge is real:
+
+3. `runbooks/stall-tests/silent-break-test.sh start` (drops the stream
+   server's packets with no RST — the half-open connection).
+4. Within ~0.5 s + buffered audio, sound stops. Expected `/debug`:
+   `stage: reading` with `stage_ms_ago` / `last_write_ms_ago` growing
+   without bound, **no** new events, `stalled: true` after ~10 s.
+5. `curl -X POST .../stop` returns 200 but is **not** processed — the
+   state stays `playing` and audio never returns. This is the failure.
+6. `silent-break-test.sh stop`; note whether playback ever resumes on
+   its own (before the fix it does not, promptly — libavformat's own
+   read may error eventually, tens of seconds later).
+
+**After the fix** (build with `rw_timeout` in place) — same steps 3–6:
+
+7. Audio stops the same way, but within roughly `rw_timeout` the read
+   returns an error: `/debug` shows a `read_timeout` event, then the
+   reconnect signature — `stage: connecting`/`backoff`,
+   `connect_attempts` climbing — exactly the "clean break" path. The
+   `reading` age never grows without bound.
+8. `/stop` issued during the stall is processed promptly (the loop is no
+   longer wedged): state goes to `stopped` within a reconnect cycle.
+9. Removing the rule (`silent-break-test.sh stop`) lets the next
+   reconnect attempt succeed and audio resumes by itself — no restart.
+
+The pass condition is the difference between step 5 (wedged, restart
+required) and steps 7–9 (bounded reconnect, self-healing, `/stop`
+honored). Keep the two `/debug` captures side by side in the PR.
+
 ## Acceptance criteria
 
 - With the silent-break scenario running, audio recovers by itself
