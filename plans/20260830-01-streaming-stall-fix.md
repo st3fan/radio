@@ -110,12 +110,20 @@ Design points to settle in review:
   chosen value.
 - **Units.** `rw_timeout` is microseconds; document it in whatever unit
   the config exposes (seconds) and convert at the edge.
-- **Interaction with `reconnect*`.** Confirm on the bench that
-  `rw_timeout` fires on a half-open socket *before* libavformat's own
-  reconnect swallows it — the silent-break scenario is the test. If the
-  two interact badly, prefer our loop (it drives the backoff, the
-  heartbeat, and the journal lines) and reconsider the `reconnect*`
-  options.
+- **Interaction with `reconnect*`.** _Settled on the bench (phase 1):_
+  they interact badly. With libavformat's `reconnect*` enabled, its
+  internal retry catches the timeout and reopens the stream in place; on
+  a still-dropped socket that just blocks again, and the stall never
+  surfaces to us — the silent-break scenario stayed wedged past the
+  timeout. Also confirmed that `rw_timeout` alone does not reach the
+  socket read on an HTTPS stream (`tls → tcp`); the tcp protocol's own
+  `timeout` option (propagated via `AV_OPT_SEARCH_CHILDREN`) is the one
+  that bites. So phase 1 sets **`timeout` + `rw_timeout` and does not
+  enable `reconnect*`** when the watchdog is on, letting the errored read
+  propagate to our own reconnect loop (which drives the backoff, the
+  heartbeat, and the journal lines). The `reconnect*` options stay only
+  in the `read_timeout_secs = 0` fallback that reproduces the pre-fix
+  daemon.
 - **Distinguish stall from EOF.** A timeout and a clean end of stream
   both surface as `SourceEnded` today. That is fine for control flow
   (both reconnect), but the heartbeat/event ring should tell them apart
