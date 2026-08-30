@@ -78,21 +78,8 @@ struct Health {
 }
 
 struct Event {
-    // Only `snapshot` reads these; see the expectation there.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "GET /debug lands in the next phase")
-    )]
     at: SystemTime,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "GET /debug lands in the next phase")
-    )]
     kind: &'static str,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "GET /debug lands in the next phase")
-    )]
     detail: String,
 }
 
@@ -266,11 +253,6 @@ impl DebugState {
         self.lock().push(kind, detail);
     }
 
-    // Read by tests today and by GET /debug in the next phase.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "GET /debug lands in the next phase")
-    )]
     pub fn snapshot(&self) -> Snapshot {
         let inner = self.lock();
         let health = &inner.health;
@@ -311,10 +293,6 @@ impl DebugState {
 
 /// A point-in-time copy of the heartbeat and events, ages in ms. This is
 /// what `/debug` serializes; the shape is explicitly not a stable API.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "GET /debug lands in the next phase")
-)]
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {
     pub stage: Stage,
@@ -333,20 +311,12 @@ pub struct Snapshot {
     pub events: Vec<EventInfo>,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "GET /debug lands in the next phase")
-)]
 #[derive(Debug, Clone, Serialize)]
 pub struct ErrorInfo {
     pub message: String,
     pub ms_ago: u64,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "GET /debug lands in the next phase")
-)]
 #[derive(Debug, Clone, Serialize)]
 pub struct EventInfo {
     pub unix_ms: u64,

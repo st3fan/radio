@@ -247,6 +247,7 @@ pub async fn route(
     query: Option<&str>,
     body: &str,
     hx_request: bool,
+    accepts_html: bool,
     app: &App,
 ) -> Option<Reply> {
     let pairs = query.map(form_pairs).unwrap_or_default();
@@ -260,6 +261,12 @@ pub async fn route(
             Some(render_page(app, error, sort).await)
         }
         (&hyper::Method::POST, "/") => Some(handle_action(app, body, hx_request, sort).await),
+        // The /debug page for browsers and its own HTMX polls; a client
+        // that does not ask for HTML (curl) falls through to the JSON
+        // snapshot in the API router.
+        (&hyper::Method::GET, "/debug") if accepts_html || hx_request => {
+            Some(render_debug_page(app))
+        }
         (&hyper::Method::GET, "/airplay/artwork") => Some(serve_artwork(app)),
         (&hyper::Method::GET, _) => serve_asset(app, path),
         _ => None,
@@ -598,7 +605,7 @@ async fn render_page(app: &App, error: Option<String>, sort: Option<Sort>) -> Re
             columns: column_headers(sort),
         }
     };
-    match render_template(app, &context) {
+    match render_template(app, "index.html", &context) {
         Ok(html) => Reply::Html(200, html),
         Err(err) => {
             eprintln!("radiod: web: template error: {err}");
@@ -607,21 +614,167 @@ async fn render_page(app: &App, error: Option<String>, sort: Option<Sort>) -> Re
     }
 }
 
-fn render_template(app: &App, context: &PageContext) -> Result<String, minijinja::Error> {
+fn render_template(
+    app: &App,
+    name: &str,
+    context: &impl Serialize,
+) -> Result<String, minijinja::Error> {
     let mut env = minijinja::Environment::new();
     let source;
     let template = match &app.web.web_dir {
         // Dev: read from disk every render — edit, reload, no recompile.
         Some(dir) => {
-            source = std::fs::read_to_string(dir.join("index.html")).map_err(|err| {
+            source = std::fs::read_to_string(dir.join(name)).map_err(|err| {
                 minijinja::Error::new(minijinja::ErrorKind::TemplateNotFound, err.to_string())
             })?;
             source.as_str()
         }
-        None => include_str!("../web/index.html"),
+        None => match name {
+            "index.html" => include_str!("../web/index.html"),
+            "debug.html" => include_str!("../web/debug.html"),
+            other => unreachable!("unknown template {other}"),
+        },
     };
-    env.add_template("index.html", template)?;
-    env.get_template("index.html")?.render(context)
+    env.add_template(name, template)?;
+    env.get_template(name)?.render(context)
+}
+
+#[derive(Serialize)]
+struct DebugRow {
+    label: &'static str,
+    value: String,
+}
+
+#[derive(Serialize)]
+struct DebugEventRow {
+    kind: &'static str,
+    detail: String,
+    age: String,
+}
+
+#[derive(Serialize)]
+struct DebugPageContext {
+    version: &'static str,
+    dev_hash: &'static str,
+    state: &'static str,
+    stalled: bool,
+    rows: Vec<DebugRow>,
+    events: Vec<DebugEventRow>,
+}
+
+/// "2.4s", "43s", "5m12s", "3h02m" — ages for the debug page.
+fn age(ms: u64) -> String {
+    let secs = ms / 1000;
+    if secs < 10 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
+/// The /debug page: the heartbeat as a table with the recent events
+/// underneath. A tool, reachable by URL — not linked from the main page.
+fn render_debug_page(app: &App) -> Reply {
+    let snapshot = app.debug.snapshot();
+    let state = match app.status.lock().expect("status lock poisoned").state {
+        State::Playing => "playing",
+        State::Paused => "paused",
+        State::Stopped => "stopped",
+    };
+    let dash = || "—".to_string();
+    let age_ago = |ms: Option<u64>| ms.map(|ms| format!("{} ago", age(ms))).unwrap_or_else(dash);
+    let rows = vec![
+        DebugRow {
+            label: "STATE",
+            value: state.to_string(),
+        },
+        DebugRow {
+            label: "STAGE",
+            value: format!(
+                "{} (for {})",
+                snapshot.stage.name(),
+                age(snapshot.stage_ms_ago)
+            ),
+        },
+        DebugRow {
+            label: "SESSION",
+            value: snapshot
+                .session_started_ms_ago
+                .map(|ms| format!("started {} ago", age(ms)))
+                .unwrap_or_else(dash),
+        },
+        DebugRow {
+            label: "STREAM",
+            value: snapshot.stream_url.clone().unwrap_or_else(dash),
+        },
+        DebugRow {
+            label: "CONNECT ATTEMPTS",
+            value: snapshot.connect_attempts.to_string(),
+        },
+        DebugRow {
+            label: "BACKOFF",
+            value: snapshot
+                .current_backoff_ms
+                .map(|ms| format!("{:.1}s", ms as f64 / 1000.0))
+                .unwrap_or_else(dash),
+        },
+        DebugRow {
+            label: "LAST READ",
+            value: age_ago(snapshot.last_read_ms_ago),
+        },
+        DebugRow {
+            label: "LAST WRITE",
+            value: age_ago(snapshot.last_write_ms_ago),
+        },
+        DebugRow {
+            label: "SAMPLES READ",
+            value: snapshot.samples_read.to_string(),
+        },
+        DebugRow {
+            label: "SAMPLES WRITTEN",
+            value: snapshot.samples_written.to_string(),
+        },
+        DebugRow {
+            label: "LAST ERROR",
+            value: snapshot
+                .last_error
+                .as_ref()
+                .map(|error| format!("{} ({} ago)", error.message, age(error.ms_ago)))
+                .unwrap_or_else(dash),
+        },
+    ];
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let events = snapshot
+        .events
+        .iter()
+        .map(|event| DebugEventRow {
+            kind: event.kind,
+            detail: event.detail.clone(),
+            age: age(now_ms.saturating_sub(event.unix_ms)),
+        })
+        .collect();
+    let context = DebugPageContext {
+        version: env!("CARGO_PKG_VERSION"),
+        dev_hash: env!("RADIOD_DEV_HASH"),
+        state,
+        stalled: snapshot.stalled,
+        rows,
+        events,
+    };
+    match render_template(app, "debug.html", &context) {
+        Ok(html) => Reply::Html(200, html),
+        Err(err) => {
+            eprintln!("radiod: web: template error: {err}");
+            Reply::Html(500, format!("template error: {err}"))
+        }
+    }
 }
 
 /// How many of the volume bar's 20 segments are filled (nearest-rounded,

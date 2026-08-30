@@ -96,6 +96,26 @@ Sets gain to zero / restores it. The `volume` value is untouched by
 muting, so unmute returns to the pre-mute level. Always 200. Muting is
 distinct from `volume 0`: `muted` is a separate flag in the status.
 
+### `GET /debug` — diagnostics, **not part of the API contract**
+
+A snapshot of the audio pipeline's health: which blocking call the
+player loop is in (`stage`, written *before* each blocking call, so a
+wedged loop is still readable), read/write ages and per-session sample
+counters, connect attempts, the current reconnect backoff, the last
+error, a `stalled` flag maintained by the daemon's stall monitor, and a
+ring of the last 100 events (connects, errors, EOFs, stalls, processed
+commands — newest first, wall-clock `unix_ms` timestamps).
+
+The shape is **explicitly unstable**: it exists to diagnose silent
+streaming stalls (see `plans/20260829-01-streaming-stall-debug.md`)
+and changes whenever the diagnostics need it. Do not build clients on
+it; everything stable lives in `GET /status`.
+
+Content negotiation, one path, two faces: clients that ask for HTML
+(browsers) get a server-rendered `/debug` page showing the same
+snapshot, auto-refreshing; everything else (`curl http://radio/debug`)
+gets the JSON. Read-only; never fails.
+
 ### Anything else
 
 404 `{"error": "not found"}` — including wrong methods on valid paths
