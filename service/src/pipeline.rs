@@ -177,8 +177,10 @@ impl FfmpegSource {
         let byte_count = samples * usize::from(self.spec.channels) * 2;
         let data = &frame.data(0)[..byte_count];
         self.queue.extend(
-            data.chunks_exact(2)
-                .map(|b| i16::from_ne_bytes([b[0], b[1]])),
+            data.as_chunks::<2>()
+                .0
+                .iter()
+                .map(|b| i16::from_ne_bytes(*b)),
         );
     }
 }
