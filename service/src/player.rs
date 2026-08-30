@@ -440,8 +440,16 @@ fn play(
             }
             Ok(n) => n,
             Err(err) => {
-                eprintln!("radiod: error reading {stream_url}: {err}");
-                shared.debug.read_error(&err.to_string());
+                // A timeout is the read watchdog firing on a stalled
+                // connection — the very case this exists to catch;
+                // record it distinctly, then reconnect like any drop.
+                if err.timed_out() {
+                    eprintln!("radiod: read timed out on {stream_url}: {err}");
+                    shared.debug.read_timeout(&err.to_string());
+                } else {
+                    eprintln!("radiod: error reading {stream_url}: {err}");
+                    shared.debug.read_error(&err.to_string());
+                }
                 break Outcome::SourceEnded;
             }
         };
@@ -702,6 +710,71 @@ mod tests {
         }
     }
 
+    /// A source whose read always reports the rw_timeout stall — the
+    /// field failure the fix turns into a reconnect.
+    struct TimingOutSource;
+
+    impl crate::source::Source for TimingOutSource {
+        fn spec(&self) -> crate::sink::AudioSpec {
+            crate::sink::AudioSpec {
+                rate: 44100,
+                channels: 2,
+            }
+        }
+
+        fn read(&mut self, _buf: &mut [i16]) -> Result<usize, SourceError> {
+            std::thread::sleep(Duration::from_millis(2));
+            Err(SourceError::timeout("Operation timed out"))
+        }
+    }
+
+    #[test]
+    fn a_read_timeout_is_recorded_distinctly_and_reconnects() {
+        let status = playing_status("");
+        let sink = TestSink::default();
+        let debug = test_debug();
+        let opens = Arc::new(Mutex::new(0u32));
+        let opens_in_factory = opens.clone();
+        // First session stalls (times out); the reconnect brings up audio.
+        let factory: SourceFactory = Box::new(move |_| {
+            let mut opens = opens_in_factory.lock().unwrap();
+            *opens += 1;
+            if *opens == 1 {
+                Ok(Box::new(TimingOutSource))
+            } else {
+                Ok(Box::new(SineSource::new()))
+            }
+        });
+        let (player, _) = spawn_with_tuning(
+            status.clone(),
+            Box::new(sink.clone()),
+            None,
+            factory,
+            test_tuning(),
+            true,
+            debug.clone(),
+        );
+        start_playing(&player, &status);
+
+        // The stall is not fatal: the player reconnects and audio flows.
+        wait_for(|| !sink.samples.lock().unwrap().is_empty());
+        assert!(*opens.lock().unwrap() >= 2);
+
+        // And /debug names it a timeout, not a plain read error or an EOF.
+        let kinds: Vec<&str> = debug.snapshot().events.iter().map(|e| e.kind).collect();
+        assert!(
+            kinds.contains(&"read_timeout"),
+            "expected a read_timeout event, got {kinds:?}"
+        );
+        assert!(
+            !kinds.contains(&"read_error"),
+            "a timeout must not be logged as a plain read_error: {kinds:?}"
+        );
+
+        player.send(Command::Stop);
+        wait_for(|| status.lock().unwrap().state == State::Stopped);
+    }
+
     /// A source that produces audio (with real-time pacing via a short
     /// sleep per read) and ends after `duration`.
     struct TimedSource {
@@ -858,7 +931,7 @@ mod tests {
         let opens_in_factory = opens.clone();
         let factory: SourceFactory = Box::new(move |_| {
             *opens_in_factory.lock().unwrap() += 1;
-            Err(SourceError("cannot connect".to_string()))
+            Err(SourceError::new("cannot connect".to_string()))
         });
         let (player, _) = spawn_with_tuning(
             status.clone(),
@@ -893,7 +966,7 @@ mod tests {
             let mut opens = opens_in_factory.lock().unwrap();
             *opens += 1;
             if *opens <= 2 {
-                Err(SourceError("connection refused".to_string()))
+                Err(SourceError::new("connection refused".to_string()))
             } else {
                 Ok(Box::new(SineSource::new()))
             }
@@ -962,7 +1035,7 @@ mod tests {
         let opens_in_factory = opens.clone();
         let factory: SourceFactory = Box::new(move |_| {
             *opens_in_factory.lock().unwrap() += 1;
-            Err(SourceError("down".to_string()))
+            Err(SourceError::new("down".to_string()))
         });
         let tuning = Tuning {
             initial_backoff: Duration::from_secs(30),
@@ -999,7 +1072,7 @@ mod tests {
         let times_in_factory = times.clone();
         let factory: SourceFactory = Box::new(move |_| {
             times_in_factory.lock().unwrap().push(Instant::now());
-            Err(SourceError("down".to_string()))
+            Err(SourceError::new("down".to_string()))
         });
         let tuning = Tuning {
             initial_backoff: Duration::from_millis(20),
@@ -1047,7 +1120,7 @@ mod tests {
                 // A long, stable session (longer than stable_after).
                 Ok(Box::new(TimedSource::new(Duration::from_millis(60))))
             } else {
-                Err(SourceError("down".to_string()))
+                Err(SourceError::new("down".to_string()))
             }
         });
         let tuning = Tuning {
@@ -1661,7 +1734,8 @@ mod tests {
     fn failing_reconnects_are_recorded_in_the_heartbeat() {
         let status = playing_status("");
         let debug = test_debug();
-        let factory: SourceFactory = Box::new(|_| Err(SourceError("cannot connect".to_string())));
+        let factory: SourceFactory =
+            Box::new(|_| Err(SourceError::new("cannot connect".to_string())));
         let (player, _) = spawn_with_tuning(
             status.clone(),
             Box::new(TestSink::default()),

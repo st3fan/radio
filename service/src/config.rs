@@ -1,6 +1,7 @@
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -12,6 +13,10 @@ pub const DEFAULT_CONFIG_PATH: &str = "/etc/radio/config.toml";
 const DEFAULT_LISTEN: &str = "0.0.0.0:8080";
 const DEFAULT_AUDIO_DEVICE: &str = "plughw:1,0";
 const DEFAULT_INITIAL_VOLUME: u8 = 50;
+/// The read watchdog default. Matches the stall monitor's threshold: a
+/// read stalled this long is the same event the monitor would flag, so
+/// the two agree on when "playing but silent" has become a real stall.
+const DEFAULT_READ_TIMEOUT_SECS: u64 = 10;
 
 /// The hardware output ceiling radiod owns (milestone 10): the speaker
 /// protection lives in the ALSA mixer, not in a software cap.
@@ -31,6 +36,25 @@ pub enum MixerCeiling {
     /// Fallback for controls without dB info: percent of the raw range,
     /// which may be nonlinear.
     Percent(u8),
+}
+
+/// Stream tuning. Today just the read watchdog that turns a silent
+/// network stall into a reconnect.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StreamConfig {
+    /// How long a stream read may block before it is treated as a
+    /// stalled connection and errored (so the player reconnects).
+    /// `None` disables the timeout — the read blocks forever, the
+    /// pre-fix behavior, kept for A/B testing the fix.
+    pub read_timeout: Option<Duration>,
+}
+
+impl Default for StreamConfig {
+    fn default() -> StreamConfig {
+        StreamConfig {
+            read_timeout: Some(Duration::from_secs(DEFAULT_READ_TIMEOUT_SECS)),
+        }
+    }
 }
 
 /// The embedded AirPlay receiver (milestone 11).
@@ -71,6 +95,7 @@ pub struct Config {
     pub initial_volume: u8,
     pub mixer: Option<MixerConfig>,
     pub airplay: AirplayConfig,
+    pub stream: StreamConfig,
     /// Where runtime settings persist (state, not config — the default
     /// lives in the systemd StateDirectory).
     pub state_path: std::path::PathBuf,
@@ -87,6 +112,7 @@ impl Default for Config {
             initial_volume: DEFAULT_INITIAL_VOLUME,
             mixer: None,
             airplay: AirplayConfig::default(),
+            stream: StreamConfig::default(),
             state_path: std::path::PathBuf::from("/var/lib/radiod/state.toml"),
             debug: false,
         }
@@ -124,8 +150,15 @@ struct RawConfig {
     initial_volume: Option<u8>,
     mixer: Option<RawMixerConfig>,
     airplay: Option<RawAirplayConfig>,
+    stream: Option<RawStreamConfig>,
     state_path: Option<String>,
     debug: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawStreamConfig {
+    read_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -190,6 +223,19 @@ impl Config {
             Some(raw_mixer) => Some(Config::validate_mixer(raw_mixer)?),
         };
 
+        let stream = match raw.stream {
+            None => StreamConfig::default(),
+            Some(raw_stream) => StreamConfig {
+                // 0 disables the timeout (block forever); any other value
+                // is seconds; absent keeps the default.
+                read_timeout: match raw_stream.read_timeout_secs {
+                    None => StreamConfig::default().read_timeout,
+                    Some(0) => None,
+                    Some(secs) => Some(Duration::from_secs(secs)),
+                },
+            },
+        };
+
         let airplay_defaults = AirplayConfig::default();
         let airplay = match raw.airplay {
             None => airplay_defaults,
@@ -221,6 +267,7 @@ impl Config {
             initial_volume,
             mixer,
             airplay,
+            stream,
             state_path: raw
                 .state_path
                 .map(std::path::PathBuf::from)
@@ -376,6 +423,44 @@ mod tests {
             config.state_path,
             std::path::PathBuf::from("/tmp/dev-state.toml")
         );
+    }
+
+    #[test]
+    fn stream_read_timeout_defaults_parses_and_disables() {
+        // Absent → the 10 s default.
+        assert_eq!(
+            Config::from_toml("").unwrap().stream.read_timeout,
+            Some(Duration::from_secs(10))
+        );
+        // A value is seconds.
+        assert_eq!(
+            Config::from_toml("[stream]\nread_timeout_secs = 20")
+                .unwrap()
+                .stream
+                .read_timeout,
+            Some(Duration::from_secs(20))
+        );
+        // 0 disables it (block forever — the pre-fix behavior).
+        assert_eq!(
+            Config::from_toml("[stream]\nread_timeout_secs = 0")
+                .unwrap()
+                .stream
+                .read_timeout,
+            None
+        );
+        // An empty section keeps the default.
+        assert_eq!(
+            Config::from_toml("[stream]").unwrap().stream.read_timeout,
+            Some(Duration::from_secs(10))
+        );
+    }
+
+    #[test]
+    fn stream_rejects_unknown_keys() {
+        assert!(matches!(
+            Config::from_toml("[stream]\nread_timeout = 10"),
+            Err(ConfigError::Toml(_))
+        ));
     }
 
     #[test]
