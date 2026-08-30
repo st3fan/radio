@@ -26,6 +26,22 @@ below use that.)
 
 Returns the status object. Never fails.
 
+### `GET /debug`
+
+A diagnostic snapshot of the audio path (plan
+`20260829-01-streaming-stall-debug`): the player thread's current stage
+(`idle` / `connecting` / `reading` / `writing` / `backoff`, written
+*before* each blocking call so a wedged thread is still readable), ages
+of the last source read and sink write, per-session sample counters,
+cumulative connect attempts, the last error, a `stalled_for_ms` flag set
+by the stall monitor, and a ring of the last 100 events (connects,
+errors, EOFs, backoffs, stalls, processed commands) with UTC timestamps.
+
+**The shape of this response is explicitly not part of the stable API
+contract** — it exists to diagnose "audio stopped but the state says
+playing" and changes as the investigation needs. `GET /debug.html`
+serves the same snapshot as a self-refreshing HTML page.
+
 ### `POST /play`
 
 Body: `{"playlist_url": "https://somafm.com/defcon.pls"}`

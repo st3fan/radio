@@ -26,6 +26,7 @@ pub struct App {
     pub player: Player,
     pub resolver: Resolver,
     pub web: Arc<crate::web::Web>,
+    pub debug: crate::debug::DebugState,
 }
 
 #[derive(Deserialize)]
@@ -47,6 +48,8 @@ fn error_body(message: &str) -> String {
 async fn route(method: &Method, url: &str, body: &str, app: &App) -> (u16, String) {
     match (method, url) {
         (&Method::GET, "/status") => (200, status_body(app)),
+        // Diagnostic snapshot (notes/api.md marks the shape unstable).
+        (&Method::GET, "/debug") => (200, debug_body(app)),
         (&Method::POST, "/play") => {
             let request: PlayRequest = match serde_json::from_str(body) {
                 Ok(request) => request,
@@ -171,6 +174,18 @@ fn airplay_active(app: &App) -> bool {
 fn status_body(app: &App) -> String {
     let status = app.status.lock().expect("status lock poisoned");
     serde_json::to_string(&*status).expect("status serializes")
+}
+
+fn debug_body(app: &App) -> String {
+    let state = {
+        let status = app.status.lock().expect("status lock poisoned");
+        match status.state {
+            State::Playing => "playing",
+            State::Paused => "paused",
+            State::Stopped => "stopped",
+        }
+    };
+    app.debug.snapshot(state).to_string()
 }
 
 /// Reads the request body, capped at MAX_BODY_BYTES.
@@ -300,11 +315,17 @@ mod tests {
     fn test_app_with_sink(resolver: Resolver) -> (App, TestSink) {
         let status = Arc::new(Mutex::new(Status::initial(&Config::default())));
         let sink = TestSink::default();
-        let player = player::spawn(
+        let debug = crate::debug::DebugState::new();
+        let player = player::spawn_with_tuning(
             status.clone(),
             Box::new(sink.clone()),
+            None,
             Box::new(|_| Ok(Box::new(SineSource::new()))),
-        );
+            player::Tuning::default(),
+            true,
+            debug.clone(),
+        )
+        .0;
         (
             App {
                 status,
@@ -314,6 +335,7 @@ mod tests {
                     None,
                     crate::web::testing::fixed_channels_fetcher(),
                 )),
+                debug,
             },
             sink,
         )
@@ -333,6 +355,18 @@ mod tests {
         panic!("state not reached within 1s");
     }
 
+    /// `playing` is set before the session opens (optimistic status), so
+    /// tests that read session details from /debug wait for the session.
+    fn wait_for_debug_session(app: &App) {
+        for _ in 0..500 {
+            if app.debug.snapshot("playing")["session"]["rate"] == 44100 {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        panic!("debug session not open within 1s");
+    }
+
     #[tokio::test]
     async fn get_status_returns_status_json() {
         let app = test_app(ok_resolver());
@@ -342,6 +376,44 @@ mod tests {
         assert_eq!(value["state"], "stopped");
         assert_eq!(value["volume"], 50);
         assert_eq!(value["mixer"], "disabled");
+    }
+
+    #[tokio::test]
+    async fn get_debug_returns_the_pipeline_snapshot() {
+        let app = test_app(ok_resolver());
+        let (code, body) = route(&Method::GET, "/debug", "", &app).await;
+        assert_eq!(code, 200);
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value["state"], "stopped");
+        assert_eq!(value["stage"], "idle");
+        assert!(value["events"].is_array());
+
+        route(
+            &Method::POST,
+            "/play",
+            r#"{"playlist_url": "https://example.com/x.pls"}"#,
+            &app,
+        )
+        .await;
+        wait_for_state(&app, State::Playing);
+        wait_for_debug_session(&app);
+        let (_, body) = route(&Method::GET, "/debug", "", &app).await;
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value["state"], "playing");
+        assert_eq!(value["session"]["rate"], 44100);
+        assert!(value["connect_attempts"].as_u64().unwrap() >= 1);
+        // The play command shows up in the event ring.
+        let events = value["events"].as_array().unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| e["kind"] == "command"
+                    && e["detail"].as_str().unwrap().starts_with("play ")),
+            "events: {events:?}"
+        );
+
+        route(&Method::POST, "/stop", "", &app).await;
+        wait_for_state(&app, State::Stopped);
     }
 
     #[tokio::test]
@@ -1070,6 +1142,50 @@ mod tests {
         };
         let (defcon, groove) = order(&html);
         assert!(defcon < groove);
+    }
+
+    #[tokio::test]
+    async fn website_debug_page_renders_the_snapshot() {
+        let app = test_app(ok_resolver());
+        let crate::web::Reply::Html(code, html) =
+            web(&Method::GET, "/debug.html", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        assert_eq!(code, 200);
+        assert!(html.contains("RADIOD DEBUG"));
+        assert!(html.contains("STAGE IDLE"));
+
+        route(
+            &Method::POST,
+            "/play",
+            r#"{"playlist_url": "https://example.com/x.pls"}"#,
+            &app,
+        )
+        .await;
+        wait_for_state(&app, State::Playing);
+        wait_for_debug_session(&app);
+        let crate::web::Reply::Html(_, html) =
+            web(&Method::GET, "/debug.html", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        assert!(html.contains("STATE PLAYING"));
+        assert!(html.contains("44100 Hz"));
+
+        // The stall and error branches of the template render too.
+        app.debug.error("test error");
+        app.debug.check_stall(true, Duration::from_millis(0));
+        let crate::web::Reply::Html(_, html) =
+            web(&Method::GET, "/debug.html", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        assert!(html.contains("STALLED"));
+        assert!(html.contains("test error"));
+
+        route(&Method::POST, "/stop", "", &app).await;
+        wait_for_state(&app, State::Stopped);
     }
 
     #[tokio::test]

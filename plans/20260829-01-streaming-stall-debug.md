@@ -99,23 +99,27 @@ the transition into (and out of) the stall, including the stuck stage
 and ages. That plants timestamped evidence in the journal even when
 nobody is watching, and pushes a `stall` event into the ring buffer.
 
-### `GET /debug` and a `/debug` page
+### `GET /debug` and a `/debug.html` page
 
 - **`GET /debug`** returns the heartbeat snapshot plus the event ring
   as JSON. Documented in `notes/api.md` as a diagnostic endpoint whose
   shape is explicitly *not* part of the stable API contract. Read-only,
   exposes nothing sensitive — the same LAN posture as everything else.
-- **`/debug` website page**: a minimal server-rendered table of the
-  same snapshot with the recent events underneath, auto-refreshing the
-  HTMX way; a plain reload keeps working without JS. Not linked from
+- **`/debug.html` website page** (built as `.html` since bare `/debug`
+  is the JSON endpoint's): a minimal server-rendered table of the same
+  snapshot with the recent events underneath, auto-refreshing via a
+  plain `<meta refresh>` — no JS at all, which is the right dependency
+  count for a page you open when things are broken. Not linked from
   the main page — it's a tool, reachable by URL.
 
 ### Optional verbose FFmpeg logging
 
 libavformat has opinions during reconnects that we currently throw
 away. A `--debug` flag (and matching `debug = true` config knob)
-installs an `av_log` callback forwarding warnings and info lines to
-stderr, prefixed `radiod: ffmpeg:`, with basic rate limiting. Off by
+raises the FFmpeg log level to verbose; without it the level is pinned
+to warnings. (Built with `av_log_set_level` rather than a custom
+callback: libav's default callback already writes to stderr, which the
+journal captures — the level knob is the whole feature.) Off by
 default; on muzak it can be flipped on in the unit file or config when
 hunting.
 
@@ -221,7 +225,7 @@ itself (`rw_timeout`, letting the existing reconnect loop do its job).
 
 When the radio goes quiet with the UI showing playing:
 
-1. `curl http://radio/debug` (or open `/debug`).
+1. `curl http://radio/debug` (or open `/debug.html`).
 2. Read the signature:
    - `stage: reading` with `stage_entered_ms_ago` huge and no recent
      events → hypothesis 1 (blocked read, missing `rw_timeout`).

@@ -17,6 +17,11 @@ listen = "0.0.0.0:80"
 #initial_volume = 50
 #state_path = "/var/lib/radiod/state.toml"
 
+# Verbose FFmpeg logging to the journal (same as running with --debug),
+# for hunting streaming problems. The /debug diagnostics endpoint and
+# page are always on regardless of this setting.
+#debug = false
+
 # The hardware output ceiling — the speaker protection. radiod sets this
 # mixer control to the ceiling at startup and re-asserts it whenever
 # playback (re)starts, so alsamixer, a boot-time `alsactl restore`, or a

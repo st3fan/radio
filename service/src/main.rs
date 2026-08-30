@@ -1,5 +1,6 @@
 mod airplay;
 mod config;
+mod debug;
 mod icy;
 mod mixer;
 mod pipeline;
@@ -26,7 +27,7 @@ use source::{Source, SourceError};
 use status::{State, Status};
 
 const USAGE: &str = "usage: radiod [--config <path>] [--sink alsa|null|wav:<path>] \
-     [--web-dir <path>] [-v | --version]";
+     [--web-dir <path>] [--debug] [-v | --version]";
 
 #[cfg(target_os = "linux")]
 const DEFAULT_SINK: &str = "alsa";
@@ -39,6 +40,8 @@ struct Args {
     /// Serve templates/assets from this directory instead of the embedded
     /// copies — PHP-style edit-and-reload during development.
     web_dir: Option<PathBuf>,
+    /// Verbose FFmpeg logging (`debug = true` in the config does the same).
+    debug: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -46,6 +49,7 @@ fn parse_args() -> Result<Args, String> {
     let mut config_path = None;
     let mut sink = None;
     let mut web_dir = None;
+    let mut debug = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--config" => {
@@ -60,6 +64,7 @@ fn parse_args() -> Result<Args, String> {
                 let path = args.next().ok_or("--web-dir requires a path")?;
                 web_dir = Some(PathBuf::from(path));
             }
+            "--debug" => debug = true,
             "-v" | "--version" => {
                 println!("radiod {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
@@ -71,6 +76,7 @@ fn parse_args() -> Result<Args, String> {
         config_path,
         sink,
         web_dir,
+        debug,
     })
 }
 
@@ -208,7 +214,17 @@ async fn main() -> ExitCode {
         }
     };
 
+    // Verbose FFmpeg logging on request; otherwise warnings only, so the
+    // journal is not flooded by per-connection info chatter.
+    if args.debug || config.debug {
+        ffmpeg_next::util::log::set_level(ffmpeg_next::util::log::Level::Verbose);
+        println!("radiod: debug: verbose ffmpeg logging enabled");
+    } else {
+        ffmpeg_next::util::log::set_level(ffmpeg_next::util::log::Level::Warning);
+    }
+
     let status = Arc::new(Mutex::new(initial_status));
+    let debug = debug::DebugState::new();
     // The player owns the mixer from here: the ceiling is re-asserted at
     // every session start, so external meddling (alsamixer, alsactl
     // restore, a re-enumerating USB DAC) is corrected before audio flows.
@@ -219,8 +235,34 @@ async fn main() -> ExitCode {
         Box::new(make_source),
         player::Tuning::default(),
         config.airplay.resume_radio,
+        debug.clone(),
     )
     .0;
+
+    // The stall monitor lives on the control plane: the player thread may
+    // be blocked (that is the failure being diagnosed), so it cannot
+    // report on itself. Transitions go to stderr — the journal keeps the
+    // timestamps even when nobody is watching /debug.
+    {
+        let debug = debug.clone();
+        let status = status.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                let playing = status.lock().expect("status lock poisoned").state == State::Playing;
+                match debug.check_stall(playing, debug::STALL_THRESHOLD) {
+                    Some(debug::StallTransition::Stalled(detail)) => {
+                        eprintln!("radiod: stall: {detail}");
+                    }
+                    Some(debug::StallTransition::Recovered(detail)) => {
+                        eprintln!("radiod: stall: {detail}");
+                    }
+                    None => {}
+                }
+            }
+        });
+    }
 
     if config.airplay.enabled {
         // Identity problems are config-grade: fail fast, like any other
@@ -334,6 +376,7 @@ async fn main() -> ExitCode {
         player: player.clone(),
         resolver: Arc::new(pls::resolve),
         web: Arc::new(web::Web::new(args.web_dir.clone())),
+        debug,
     });
 
     state::spawn_saver(

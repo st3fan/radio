@@ -74,6 +74,9 @@ pub struct Config {
     /// Where runtime settings persist (state, not config — the default
     /// lives in the systemd StateDirectory).
     pub state_path: std::path::PathBuf,
+    /// Verbose FFmpeg logging to stderr (same as `--debug`); the /debug
+    /// diagnostics are always on and not affected by this.
+    pub debug: bool,
 }
 
 impl Default for Config {
@@ -85,6 +88,7 @@ impl Default for Config {
             mixer: None,
             airplay: AirplayConfig::default(),
             state_path: std::path::PathBuf::from("/var/lib/radiod/state.toml"),
+            debug: false,
         }
     }
 }
@@ -121,6 +125,7 @@ struct RawConfig {
     mixer: Option<RawMixerConfig>,
     airplay: Option<RawAirplayConfig>,
     state_path: Option<String>,
+    debug: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -220,6 +225,7 @@ impl Config {
                 .state_path
                 .map(std::path::PathBuf::from)
                 .unwrap_or(defaults.state_path),
+            debug: raw.debug.unwrap_or(defaults.debug),
         })
     }
 
@@ -370,6 +376,12 @@ mod tests {
             config.state_path,
             std::path::PathBuf::from("/tmp/dev-state.toml")
         );
+    }
+
+    #[test]
+    fn debug_defaults_off_and_parses() {
+        assert!(!Config::from_toml("").unwrap().debug);
+        assert!(Config::from_toml("debug = true").unwrap().debug);
     }
 
     #[test]

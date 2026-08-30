@@ -260,9 +260,47 @@ pub async fn route(
             Some(render_page(app, error, sort).await)
         }
         (&hyper::Method::POST, "/") => Some(handle_action(app, body, hx_request, sort).await),
+        (&hyper::Method::GET, "/debug.html") => Some(render_debug_page(app)),
         (&hyper::Method::GET, "/airplay/artwork") => Some(serve_artwork(app)),
         (&hyper::Method::GET, _) => serve_asset(app, path),
         _ => None,
+    }
+}
+
+/// The diagnostic page (plan 20260829-01): the same snapshot as the JSON
+/// `GET /debug`, rendered as a self-refreshing table. `/debug.html`
+/// because `/debug` is the JSON API's; both are unstable by contract.
+fn render_debug_page(app: &App) -> Reply {
+    let state = {
+        let status = app.status.lock().expect("status lock poisoned");
+        match status.state {
+            State::Playing => "playing",
+            State::Paused => "paused",
+            State::Stopped => "stopped",
+        }
+    };
+    let context = app.debug.snapshot(state);
+    let mut env = minijinja::Environment::new();
+    let source;
+    let template = match &app.web.web_dir {
+        Some(dir) => match std::fs::read_to_string(dir.join("debug.html")) {
+            Ok(contents) => {
+                source = contents;
+                source.as_str()
+            }
+            Err(err) => return Reply::Html(500, format!("cannot read debug.html: {err}")),
+        },
+        None => include_str!("../web/debug.html"),
+    };
+    let render = env
+        .add_template("debug.html", template)
+        .and_then(|()| env.get_template("debug.html")?.render(context));
+    match render {
+        Ok(html) => Reply::Html(200, html),
+        Err(err) => {
+            eprintln!("radiod: web: debug template error: {err}");
+            Reply::Html(500, format!("template error: {err}"))
+        }
     }
 }
 

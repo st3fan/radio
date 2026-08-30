@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<!-- Plain reload on a timer: works with no JS at all, which is exactly
+     what you want from a page you open when things are broken. -->
+<meta http-equiv="refresh" content="2">
+<title>RADIOD DEBUG</title>
+<style>
+  body { background: #000; color: #9f9; margin: 1.5em;
+         font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+         font-size: 14px; line-height: 1.5; }
+  h1 { font-size: 1em; font-weight: normal; color: #6c6;
+       border-bottom: 1px solid #262; padding-bottom: 0.4em; }
+  table { border-collapse: collapse; margin: 0 0 1.5em; }
+  th, td { text-align: left; vertical-align: top;
+           padding: 0.05em 1.25em 0.05em 0; }
+  th { color: #6c6; font-weight: normal; white-space: nowrap; }
+  .stall { color: #f66; }
+  .err { color: #f96; }
+  .dim { color: #484; white-space: nowrap; }
+</style>
+</head>
+<body>
+<h1>RADIOD DEBUG · STATE {{ state|upper }} · STAGE {{ stage|upper }}</h1>
+
+{% if stalled_for_ms is not none %}
+<p class="stall">▌STALLED — no audio has reached the sink for {{ (stalled_for_ms / 1000)|round|int }}s.</p>
+{% endif %}
+
+<table>
+  <tr><th>stage</th>
+      <td>{{ stage }} · entered {{ (stage_entered_ms_ago / 1000)|round(1) }}s ago</td></tr>
+  {% if session is not none %}
+  <tr><th>session</th>
+      <td>{{ session.rate }} Hz · {{ session.channels }} ch · open {{ (session.started_ms_ago / 1000)|round|int }}s</td></tr>
+  <tr><th>samples</th>
+      <td>read {{ session.samples_read }} · written {{ session.samples_written }}</td></tr>
+  {% else %}
+  <tr><th>session</th><td class="dim">none</td></tr>
+  {% endif %}
+  <tr><th>last read</th>
+      <td>{% if last_read_ms_ago is not none %}{{ (last_read_ms_ago / 1000)|round(1) }}s ago{% else %}<span class="dim">never</span>{% endif %}</td></tr>
+  <tr><th>last write</th>
+      <td>{% if last_write_ms_ago is not none %}{{ (last_write_ms_ago / 1000)|round(1) }}s ago{% else %}<span class="dim">never</span>{% endif %}</td></tr>
+  <tr><th>connects</th>
+      <td>{{ connect_attempts }} since start{% if current_backoff_ms is not none %} · next retry in ≤{{ (current_backoff_ms / 1000)|round(1) }}s{% endif %}</td></tr>
+  <tr><th>last error</th>
+      <td>{% if last_error is not none %}<span class="err">{{ last_error.message }}</span> · {{ (last_error.ms_ago / 1000)|round|int }}s ago{% else %}<span class="dim">none</span>{% endif %}</td></tr>
+</table>
+
+<h1>EVENTS (NEWEST FIRST)</h1>
+<table>
+  {% for event in events|reverse %}
+  <tr>
+    <td class="dim">{{ event.time }}</td>
+    <td class="{% if event.kind in ["error", "stall"] %}err{% else %}dim{% endif %}">{{ event.kind }}</td>
+    <td>{{ event.detail }}</td>
+  </tr>
+  {% else %}
+  <tr><td class="dim">nothing yet</td></tr>
+  {% endfor %}
+</table>
+</body>
+</html>
