@@ -97,11 +97,19 @@ pub fn enable_verbose_logging() {
     }
 }
 
+/// The `va_list` parameter type as bindgen generates it for this target:
+/// on x86_64 the C array type decays to a pointer in argument position;
+/// everywhere else (aarch64, armhf, Apple arm64) the alias itself appears.
+#[cfg(target_arch = "x86_64")]
+type VaList = *mut ffmpeg::sys::__va_list_tag;
+#[cfg(not(target_arch = "x86_64"))]
+type VaList = ffmpeg::sys::va_list;
+
 unsafe extern "C" fn log_callback(
     ptr: *mut std::os::raw::c_void,
     level: std::os::raw::c_int,
     fmt: *const std::os::raw::c_char,
-    vl: ffmpeg::sys::va_list,
+    vl: VaList,
 ) {
     if level > ffmpeg::sys::AV_LOG_INFO {
         return;
