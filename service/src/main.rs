@@ -27,7 +27,7 @@ use source::{Source, SourceError};
 use status::{State, Status};
 
 const USAGE: &str = "usage: radiod [--config <path>] [--sink alsa|null|wav:<path>] \
-     [--web-dir <path>] [-v | --version]";
+     [--web-dir <path>] [--debug] [-v | --version]";
 
 #[cfg(target_os = "linux")]
 const DEFAULT_SINK: &str = "alsa";
@@ -40,6 +40,9 @@ struct Args {
     /// Serve templates/assets from this directory instead of the embedded
     /// copies — PHP-style edit-and-reload during development.
     web_dir: Option<PathBuf>,
+    /// Forward FFmpeg's log chatter to stderr (same as `debug = true` in
+    /// the config; the flag suits a systemd drop-in).
+    debug: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -47,6 +50,7 @@ fn parse_args() -> Result<Args, String> {
     let mut config_path = None;
     let mut sink = None;
     let mut web_dir = None;
+    let mut debug = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--config" => {
@@ -61,6 +65,7 @@ fn parse_args() -> Result<Args, String> {
                 let path = args.next().ok_or("--web-dir requires a path")?;
                 web_dir = Some(PathBuf::from(path));
             }
+            "--debug" => debug = true,
             "-v" | "--version" => {
                 println!("radiod {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
@@ -72,6 +77,7 @@ fn parse_args() -> Result<Args, String> {
         config_path,
         sink,
         web_dir,
+        debug,
     })
 }
 
@@ -162,6 +168,11 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    if args.debug || config.debug {
+        pipeline::enable_verbose_logging();
+        println!("radiod: debug: forwarding ffmpeg log output");
+    }
 
     // Saved settings win over config defaults: the radio remembers its
     // volume across restarts, reboots and reinstalls.
