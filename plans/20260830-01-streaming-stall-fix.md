@@ -31,6 +31,52 @@ reconnection only helps when the socket *errors*; a half-open connection
 never does. The player's own reconnect-with-backoff loop is sound — it
 just never gets control back, because the blocking read never returns.
 
+### Seen in the wild
+
+While preparing this plan the daemon wedged on its own on the dev Pi —
+**no impairment active, nothing provoked it** — playing SomaFM Groove
+Salad. The debug mode caught the whole thing; this is the field failure,
+not an induced one, and the strongest single piece of evidence for the
+fix. The `/debug` snapshot at the moment of diagnosis (trimmed):
+
+```json
+{
+  "stage": "reading",
+  "stage_ms_ago": 1435317,          // stuck in reading for ~24 minutes
+  "stream_url": "https://ice6.somafm.com/groovesalad-128-aac",
+  "connect_attempts": 7,            // frozen — the reconnect loop never got control
+  "current_backoff_ms": null,
+  "last_read_ms_ago": 1435337,
+  "last_write_ms_ago": 1435317,     // no audio for ~24 minutes
+  "samples_read": 400156672,
+  "samples_written": 400156672,     // queue empty; nothing to write
+  "last_error": { "message": "Connection refused", "ms_ago": 6016509 },  // ~100 min old — no *new* error
+  "stalled": true,
+  "events": [
+    { "kind": "stall",     "detail": "no audio for 10.7s (stage: reading)" },  // newest
+    { "kind": "recovered", "detail": "after 24.0s" },
+    { "kind": "stall",     "detail": "no audio for 10.6s (stage: reading)" },
+    "… earlier reconnect burst (attempts 2–7, Connection refused, backoff 0.5→16s) …",
+    { "kind": "connect",   "detail": "attempt 1: https://ice6.somafm.com/groovesalad-128-aac" },
+    { "kind": "session",   "detail": "radio: https://ice6.somafm.com/groovesalad-128-aac" }
+  ]
+}
+```
+
+Corroborating facts checked at the same moment:
+
+- `ss -tnp` showed the stream socket still **`ESTAB`** to
+  `208.64.184.36:443` with empty send/recv queues — open, but quiet: a
+  half-open connection, exactly the mechanism above.
+- `POST /stop` returned **200 but was never processed** — the state
+  stayed `playing` — because the player thread was blocked in
+  `av_read_frame` and could not poll the command channel.
+- The only remedy was restarting the daemon.
+
+Every signature this plan's fix must flip is present here: the unbounded
+`reading` age, the frozen attempt counter, the absent *new* error, the
+deferred `/stop`.
+
 ## Goal
 
 Turn the indefinite wedge into a bounded, self-healing reconnect, and
