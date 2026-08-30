@@ -3,10 +3,16 @@
 # that builds .debs — nothing runs on pushes or pull requests.
 #
 # amd64 and arm64 build NATIVELY inside debian:trixie containers — amd64 on
-# ubuntu-latest, arm64 on the free public arm64 runners — and armhf (ARMv7)
-# cross-compiles via Debian multiarch on ubuntu-latest (no 32-bit ARM
-# runners exist; its tests are covered by the other legs). The same
+# ubuntu-latest, arm64 on the free public arm64 runners. The same
 # service/build-deb.sh script is used here and on the box.
+#
+# armhf (ARMv7 / Banana Pi) is TEMPORARILY DISABLED: ffmpeg-sys-next 9.0.0
+# fails to cross-compile for 32-bit ARM — its vendored Vulkan hwcontext
+# stub hardcodes the 64-bit struct layout and a _Static_assert(sizeof
+# VkPhysicalDeviceFeatures2 == 240) that is false on 32-bit, so bindgen
+# aborts. It has been broken since the FFmpeg-9 bump (#115); CI only builds
+# amd64, so it surfaced at the first 0.6.0 release. Restore the armhf matrix
+# leg below once ffmpeg-sys-next ships a 32-bit fix (or we patch the stub).
 
 name: Release
 
@@ -39,9 +45,10 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
             setup: native
-          - arch: armhf
-            runner: ubuntu-latest
-            setup: cross
+          # armhf temporarily disabled — see the header comment. To restore:
+          #   - arch: armhf
+          #     runner: ubuntu-latest
+          #     setup: cross
     runs-on: ${{ matrix.runner }}
     container: debian:trixie
     steps:
