@@ -1,5 +1,6 @@
 mod airplay;
 mod config;
+mod debug;
 mod icy;
 mod mixer;
 mod pipeline;
@@ -209,6 +210,9 @@ async fn main() -> ExitCode {
     };
 
     let status = Arc::new(Mutex::new(initial_status));
+    // Always-on pipeline observability: the player thread feeds the
+    // heartbeat, the monitor task watches it from the control plane.
+    let debug = Arc::new(debug::DebugState::new());
     // The player owns the mixer from here: the ceiling is re-asserted at
     // every session start, so external meddling (alsamixer, alsactl
     // restore, a re-enumerating USB DAC) is corrected before audio flows.
@@ -219,8 +223,10 @@ async fn main() -> ExitCode {
         Box::new(make_source),
         player::Tuning::default(),
         config.airplay.resume_radio,
+        debug.clone(),
     )
     .0;
+    debug::spawn_monitor(status.clone(), debug.clone());
 
     if config.airplay.enabled {
         // Identity problems are config-grade: fail fast, like any other

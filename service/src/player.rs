@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::airplay::AirplaySource;
+use crate::debug::{DebugState, Stage};
 use crate::mixer::MixerControl;
 use crate::sink::AudioSink;
 use crate::source::{Source, SourceFactory};
@@ -14,6 +15,13 @@ use crate::volume;
 
 /// The optional hardware-ceiling owner; None for the dev sinks.
 type Mixer = Option<Box<dyn MixerControl>>;
+
+/// The two observation planes the player writes to: the public status
+/// (the API contract) and the always-on debug heartbeat (diagnostics).
+struct Shared<'a> {
+    status: &'a Mutex<Status>,
+    debug: &'a DebugState,
+}
 
 const CHUNK_SAMPLES: usize = 2048;
 
@@ -99,7 +107,16 @@ pub fn spawn(
     sink: Box<dyn AudioSink>,
     source_factory: SourceFactory,
 ) -> Player {
-    spawn_with_tuning(status, sink, None, source_factory, Tuning::default(), true).0
+    spawn_with_tuning(
+        status,
+        sink,
+        None,
+        source_factory,
+        Tuning::default(),
+        true,
+        Arc::new(DebugState::new()),
+    )
+    .0
 }
 
 /// Also returns the thread's join handle: the thread exits (closing the
@@ -112,12 +129,17 @@ pub fn spawn_with_tuning(
     source_factory: SourceFactory,
     tuning: Tuning,
     resume_radio: bool,
+    debug: Arc<DebugState>,
 ) -> (Player, std::thread::JoinHandle<()>) {
     let (tx, rx) = channel();
     let handle = std::thread::spawn(move || {
+        let shared = Shared {
+            status: &status,
+            debug: &debug,
+        };
         run(
             &rx,
-            &status,
+            &shared,
             sink,
             mixer,
             &source_factory,
@@ -130,7 +152,7 @@ pub fn spawn_with_tuning(
 
 fn run(
     rx: &Receiver<Command>,
-    status: &Mutex<Status>,
+    shared: &Shared,
     mut sink: Box<dyn AudioSink>,
     mut mixer: Mixer,
     source_factory: &SourceFactory,
@@ -143,7 +165,7 @@ fn run(
             Session::Playing(station) => {
                 match play_with_retries(
                     rx,
-                    status,
+                    shared,
                     sink.as_mut(),
                     &mut mixer,
                     source_factory,
@@ -151,10 +173,10 @@ fn run(
                     tuning,
                 ) {
                     RetryEnd::Command(command) => {
-                        transition(command, Session::Playing(station), status, resume_radio)
+                        transition(command, Session::Playing(station), shared, resume_radio)
                     }
                     RetryEnd::Fatal => {
-                        set_stopped(status);
+                        set_stopped(shared.status);
                         Session::Idle
                     }
                     RetryEnd::Disconnected => return,
@@ -163,23 +185,24 @@ fn run(
             Session::Airplay {
                 mut source,
                 remembered,
-            } => match play_airplay(rx, status, sink.as_mut(), &mut mixer, &mut source) {
+            } => match play_airplay(rx, shared, sink.as_mut(), &mut mixer, &mut source) {
                 AirplayEnd::Command(command) => transition(
                     command,
                     Session::Airplay { source, remembered },
-                    status,
+                    shared,
                     resume_radio,
                 ),
-                AirplayEnd::Ended => end_airplay(remembered, status, resume_radio),
+                AirplayEnd::Ended => end_airplay(remembered, shared.status, resume_radio),
                 AirplayEnd::Fatal => {
-                    set_stopped(status);
+                    set_stopped(shared.status);
                     Session::Idle
                 }
                 AirplayEnd::Disconnected => return,
             },
             idle_or_paused => {
+                shared.debug.set_stage(Stage::Idle);
                 let Ok(command) = rx.recv() else { return };
-                transition(command, idle_or_paused, status, resume_radio)
+                transition(command, idle_or_paused, shared, resume_radio)
             }
         };
     }
@@ -197,17 +220,18 @@ enum RetryEnd {
 /// failures (the audio device, not the network) are fatal.
 fn play_with_retries(
     rx: &Receiver<Command>,
-    status: &Mutex<Status>,
+    shared: &Shared,
     sink: &mut dyn AudioSink,
     mixer: &mut Mixer,
     source_factory: &SourceFactory,
     station: &Station,
     tuning: Tuning,
 ) -> RetryEnd {
+    shared.debug.radio_session_started(&station.stream_url);
     let mut backoff = tuning.initial_backoff;
     loop {
         let started = Instant::now();
-        match play(rx, status, sink, mixer, source_factory, station) {
+        match play(rx, shared, sink, mixer, source_factory, station) {
             Outcome::Interrupted(command) => return RetryEnd::Command(command),
             Outcome::Disconnected => return RetryEnd::Disconnected,
             Outcome::SinkFailed => return RetryEnd::Fatal,
@@ -220,6 +244,7 @@ fn play_with_retries(
                     station.stream_url,
                     backoff.as_secs_f32()
                 );
+                shared.debug.backoff(backoff);
                 // recv_timeout keeps the wait responsive: /stop, /pause,
                 // and /play interrupt a backoff sleep immediately.
                 match rx.recv_timeout(backoff) {
@@ -235,12 +260,16 @@ fn play_with_retries(
 
 /// Applies a command to the current session. The only writer of pause/stop
 /// status transitions; `play()` itself sets `playing`.
-fn transition(
-    command: Command,
-    session: Session,
-    status: &Mutex<Status>,
-    resume_radio: bool,
-) -> Session {
+fn transition(command: Command, session: Session, shared: &Shared, resume_radio: bool) -> Session {
+    let status = shared.status;
+    shared.debug.command(match &command {
+        Command::Play { .. } => "play",
+        Command::Stop => "stop",
+        Command::Pause => "pause",
+        Command::Resume => "resume",
+        Command::AirplayStarted { .. } => "airplay_started",
+        Command::AirplayEnded => "airplay_ended",
+    });
     match command {
         // The server refuses /play during an AirPlay session (409); if a
         // Play races through anyway, the station wins and the abandoned
@@ -327,12 +356,13 @@ enum Outcome {
 /// or the source ends.
 fn play(
     rx: &Receiver<Command>,
-    status: &Mutex<Status>,
+    shared: &Shared,
     sink: &mut dyn AudioSink,
     mixer: &mut Mixer,
     source_factory: &SourceFactory,
     station: &Station,
 ) -> Outcome {
+    let status = shared.status;
     // The hardware ceiling comes first: every session start (including
     // each reconnect attempt, which covers the USB-DAC-reappeared case)
     // re-asserts it, and a session that cannot get its ceiling does not
@@ -375,15 +405,19 @@ fn play(
     }
 
     let stream_url = station.stream_url.as_str();
+    shared.debug.connect_started(stream_url);
     let mut source = match source_factory(stream_url) {
         Ok(source) => source,
         Err(err) => {
             eprintln!("radiod: cannot open {stream_url}: {err}");
+            shared.debug.connect_failed(&err.to_string());
             return Outcome::SourceEnded;
         }
     };
+    shared.debug.connected(stream_url);
     if let Err(err) = sink.open(source.spec()) {
         eprintln!("radiod: cannot open audio sink: {err}");
+        shared.debug.sink_error(&err.to_string());
         return Outcome::SinkFailed;
     }
 
@@ -395,17 +429,23 @@ fn play(
             Err(TryRecvError::Disconnected) => break Outcome::Disconnected,
         }
 
+        // The stage is set *before* each blocking call so /debug shows
+        // where the loop is stuck even when the call never returns.
+        shared.debug.set_stage(Stage::Reading);
         let n = match source.read(&mut buf) {
             Ok(0) => {
                 eprintln!("radiod: stream ended: {stream_url}");
+                shared.debug.source_eof();
                 break Outcome::SourceEnded;
             }
             Ok(n) => n,
             Err(err) => {
                 eprintln!("radiod: error reading {stream_url}: {err}");
+                shared.debug.read_error(&err.to_string());
                 break Outcome::SourceEnded;
             }
         };
+        shared.debug.note_read(n);
 
         if let Some(icy) = source.icy() {
             let mut status = status.lock().expect("status lock poisoned");
@@ -419,10 +459,13 @@ fn play(
         };
         volume::apply_gain(&mut buf[..n], gain);
 
+        shared.debug.set_stage(Stage::Writing);
         if let Err(err) = sink.write(&buf[..n]) {
             eprintln!("radiod: error writing to audio sink: {err}");
+            shared.debug.sink_error(&err.to_string());
             break Outcome::SinkFailed;
         }
+        shared.debug.note_write(n);
     };
 
     sink.close();
@@ -442,11 +485,12 @@ enum AirplayEnd {
 /// the session's lifetime.
 fn play_airplay(
     rx: &Receiver<Command>,
-    status: &Mutex<Status>,
+    shared: &Shared,
     sink: &mut dyn AudioSink,
     mixer: &mut Mixer,
     source: &mut AirplaySource,
 ) -> AirplayEnd {
+    let status = shared.status;
     // Same ceiling-first rule as the radio path: no verified ceiling, no
     // audio — an AirPlay sender at slider-max must meet the same hardware
     // cap as everything else.
@@ -467,6 +511,12 @@ fn play_airplay(
     }
 
     let spec = source.spec();
+    // One stage for the whole session: the AirPlay source reads with a
+    // timeout and substitutes silence, so it cannot silently block the
+    // loop — the counters and ages below still flow per chunk.
+    shared
+        .debug
+        .airplay_session_started(spec.rate, spec.channels);
     {
         let mut status = status.lock().expect("status lock poisoned");
         status.state = State::Playing;
@@ -483,6 +533,7 @@ fn play_airplay(
 
     if let Err(err) = sink.open(spec) {
         eprintln!("radiod: cannot open audio sink: {err}");
+        shared.debug.sink_error(&err.to_string());
         return AirplayEnd::Fatal;
     }
 
@@ -495,13 +546,20 @@ fn play_airplay(
         }
 
         let n = match source.read(&mut buf) {
-            Ok(0) => break AirplayEnd::Ended,
+            Ok(0) => {
+                shared.debug.event("airplay", "session ended".to_string());
+                break AirplayEnd::Ended;
+            }
             Ok(n) => n,
             Err(err) => {
                 eprintln!("radiod: airplay source error: {err}");
+                shared
+                    .debug
+                    .event("airplay", format!("source error: {err}"));
                 break AirplayEnd::Ended;
             }
         };
+        shared.debug.note_read(n);
 
         // Master volume × the sender's slider; apply_gain clamps, so the
         // combination can attenuate but never amplify.
@@ -513,8 +571,10 @@ fn play_airplay(
 
         if let Err(err) = sink.write(&buf[..n]) {
             eprintln!("radiod: error writing to audio sink: {err}");
+            shared.debug.sink_error(&err.to_string());
             break AirplayEnd::Fatal;
         }
+        shared.debug.note_write(n);
     };
 
     sink.close();
@@ -567,6 +627,10 @@ mod tests {
     fn playing_status(config_toml: &str) -> Arc<Mutex<Status>> {
         let config = Config::from_toml(config_toml).unwrap();
         Arc::new(Mutex::new(Status::initial(&config)))
+    }
+
+    fn test_debug() -> Arc<DebugState> {
+        Arc::new(DebugState::new())
     }
 
     #[test]
@@ -803,6 +867,7 @@ mod tests {
             factory,
             test_tuning(),
             true,
+            test_debug(),
         );
 
         player.send(Command::Play {
@@ -840,6 +905,7 @@ mod tests {
             factory,
             test_tuning(),
             true,
+            test_debug(),
         );
 
         player.send(Command::Play {
@@ -872,6 +938,7 @@ mod tests {
             factory,
             test_tuning(),
             true,
+            test_debug(),
         );
 
         player.send(Command::Play {
@@ -908,6 +975,7 @@ mod tests {
             factory,
             tuning,
             true,
+            test_debug(),
         );
 
         player.send(Command::Play {
@@ -945,6 +1013,7 @@ mod tests {
             factory,
             tuning,
             true,
+            test_debug(),
         );
 
         player.send(Command::Play {
@@ -993,6 +1062,7 @@ mod tests {
             factory,
             tuning,
             true,
+            test_debug(),
         );
 
         player.send(Command::Play {
@@ -1128,6 +1198,7 @@ mod tests {
             sine_factory(),
             Tuning::default(),
             true,
+            test_debug(),
         );
 
         start_playing(&player, &status);
@@ -1161,6 +1232,7 @@ mod tests {
             sine_factory(),
             Tuning::default(),
             true,
+            test_debug(),
         );
 
         player.send(Command::Play {
@@ -1248,6 +1320,7 @@ mod tests {
             sine_factory(),
             Tuning::default(),
             false,
+            test_debug(),
         );
         start_playing(&player, &status);
 
@@ -1361,6 +1434,7 @@ mod tests {
             sine_factory(),
             Tuning::default(),
             true,
+            test_debug(),
         );
         start_playing(&player, &status);
 
@@ -1413,5 +1487,278 @@ mod tests {
 
         let samples = sink.samples.lock().unwrap();
         assert!(samples.iter().all(|s| *s == 0));
+    }
+
+    /// A source that plays one chunk, then blocks inside read() until the
+    /// test releases it (a half-open TCP connection in miniature), then
+    /// reports EOF.
+    struct BlockingSource {
+        played_first: bool,
+        release: Receiver<()>,
+    }
+
+    impl crate::source::Source for BlockingSource {
+        fn spec(&self) -> crate::sink::AudioSpec {
+            crate::sink::AudioSpec {
+                rate: 44100,
+                channels: 2,
+            }
+        }
+
+        fn read(&mut self, buf: &mut [i16]) -> Result<usize, SourceError> {
+            if !self.played_first {
+                self.played_first = true;
+                buf.fill(1000);
+                return Ok(buf.len());
+            }
+            let _ = self.release.recv();
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn blocked_read_is_visible_and_stalls_once() {
+        use crate::debug::{StallTransition, check_stall};
+
+        let status = playing_status("");
+        let sink = TestSink::default();
+        let debug = test_debug();
+        let (release_tx, release_rx) = channel();
+        let release_rx = Arc::new(Mutex::new(Some(release_rx)));
+        let opens = Arc::new(Mutex::new(0u32));
+        let opens_in_factory = opens.clone();
+        let factory: SourceFactory = Box::new(move |_| {
+            let mut opens = opens_in_factory.lock().unwrap();
+            *opens += 1;
+            if *opens == 1 {
+                Ok(Box::new(BlockingSource {
+                    played_first: false,
+                    release: release_rx.lock().unwrap().take().unwrap(),
+                }))
+            } else {
+                Ok(Box::new(SineSource::new()))
+            }
+        });
+        let (player, _) = spawn_with_tuning(
+            status.clone(),
+            Box::new(sink.clone()),
+            None,
+            factory,
+            test_tuning(),
+            true,
+            debug.clone(),
+        );
+        start_playing(&player, &status);
+
+        // The first chunk flows, then the read blocks forever: the stage
+        // was written before the call, so the wedge is observable.
+        wait_for(|| debug.snapshot().samples_written > 0);
+        wait_for(|| debug.snapshot().stage == Stage::Reading);
+
+        // The monitor flags the stall exactly once, with the stuck stage.
+        wait_for(|| {
+            matches!(
+                check_stall(&status, &debug, Duration::from_millis(20)),
+                Some(StallTransition::Entered {
+                    stage: Stage::Reading,
+                    ..
+                })
+            )
+        });
+        assert!(
+            check_stall(&status, &debug, Duration::from_millis(20)).is_none(),
+            "no second transition while still stalled"
+        );
+        let snapshot = debug.snapshot();
+        assert!(snapshot.stalled);
+        assert_eq!(snapshot.stage, Stage::Reading);
+        assert!(snapshot.last_write_ms_ago.unwrap() >= 20);
+
+        // Unblocking the read ends the source (EOF), the reconnect loop
+        // brings up the sine source, audio flows: the stall ends.
+        release_tx.send(()).unwrap();
+        wait_for(|| {
+            matches!(
+                check_stall(&status, &debug, Duration::from_millis(20)),
+                Some(StallTransition::Ended { .. })
+            )
+        });
+        assert!(!debug.snapshot().stalled);
+        let kinds: Vec<&str> = debug.snapshot().events.iter().map(|e| e.kind).collect();
+        for kind in ["stall", "recovered", "eof", "connect", "connected"] {
+            assert!(kinds.contains(&kind), "missing {kind} in {kinds:?}");
+        }
+
+        player.send(Command::Stop);
+        wait_for(|| status.lock().unwrap().state == State::Stopped);
+    }
+
+    /// A sink whose first write blocks until released — a wedged ALSA
+    /// writei after a DAC hiccup.
+    struct BlockingSink {
+        blocked_once: bool,
+        release: Receiver<()>,
+    }
+
+    impl AudioSink for BlockingSink {
+        fn open(&mut self, _spec: crate::sink::AudioSpec) -> Result<(), crate::sink::SinkError> {
+            Ok(())
+        }
+
+        fn write(&mut self, _frames: &[i16]) -> Result<(), crate::sink::SinkError> {
+            if !self.blocked_once {
+                self.blocked_once = true;
+                let _ = self.release.recv();
+            }
+            Ok(())
+        }
+
+        fn close(&mut self) {}
+    }
+
+    #[test]
+    fn blocked_write_is_visible_in_the_heartbeat() {
+        use crate::debug::{StallTransition, check_stall};
+
+        let status = playing_status("");
+        let debug = test_debug();
+        let (release_tx, release_rx) = channel();
+        let (player, _) = spawn_with_tuning(
+            status.clone(),
+            Box::new(BlockingSink {
+                blocked_once: false,
+                release: release_rx,
+            }),
+            None,
+            sine_factory(),
+            test_tuning(),
+            true,
+            debug.clone(),
+        );
+        start_playing(&player, &status);
+
+        wait_for(|| debug.snapshot().stage == Stage::Writing);
+        std::thread::sleep(Duration::from_millis(30));
+        let snapshot = debug.snapshot();
+        assert_eq!(snapshot.stage, Stage::Writing, "still stuck in the write");
+        assert!(snapshot.stage_ms_ago >= 30);
+        assert!(snapshot.samples_read > 0, "the read side did run");
+        assert_eq!(snapshot.samples_written, 0, "nothing reached the sink");
+        assert!(matches!(
+            check_stall(&status, &debug, Duration::from_millis(20)),
+            Some(StallTransition::Entered {
+                stage: Stage::Writing,
+                ..
+            })
+        ));
+
+        release_tx.send(()).unwrap();
+        player.send(Command::Stop);
+        wait_for(|| status.lock().unwrap().state == State::Stopped);
+    }
+
+    #[test]
+    fn failing_reconnects_are_recorded_in_the_heartbeat() {
+        let status = playing_status("");
+        let debug = test_debug();
+        let factory: SourceFactory = Box::new(|_| Err(SourceError("cannot connect".to_string())));
+        let (player, _) = spawn_with_tuning(
+            status.clone(),
+            Box::new(TestSink::default()),
+            None,
+            factory,
+            test_tuning(),
+            true,
+            debug.clone(),
+        );
+        player.send(Command::Play {
+            playlist_url: "https://example.com/bad.pls".to_string(),
+            stream_url: "https://example.com/bad".to_string(),
+        });
+
+        // The hypothesis-2 signature: attempts climbing, a fresh error.
+        wait_for(|| debug.snapshot().connect_attempts >= 3);
+        let snapshot = debug.snapshot();
+        assert_eq!(
+            snapshot.stream_url.as_deref(),
+            Some("https://example.com/bad")
+        );
+        assert_eq!(
+            snapshot.last_error.as_ref().unwrap().message,
+            "cannot connect"
+        );
+        let kinds: Vec<&str> = snapshot.events.iter().map(|e| e.kind).collect();
+        for kind in ["session", "connect", "connect_failed", "backoff"] {
+            assert!(kinds.contains(&kind), "missing {kind} in {kinds:?}");
+        }
+
+        player.send(Command::Stop);
+        wait_for(|| status.lock().unwrap().state == State::Stopped);
+        wait_for(|| debug.snapshot().stage == Stage::Idle);
+        assert!(
+            debug
+                .snapshot()
+                .events
+                .iter()
+                .any(|e| e.kind == "command" && e.detail == "stop"),
+            "processed commands land in the ring"
+        );
+    }
+
+    /// A source that trickles audio far below real time (an underrunning
+    /// icecast server): reads succeed, so only the rate betrays it.
+    struct DribbleSource;
+
+    impl crate::source::Source for DribbleSource {
+        fn spec(&self) -> crate::sink::AudioSpec {
+            crate::sink::AudioSpec {
+                rate: 44100,
+                channels: 2,
+            }
+        }
+
+        fn read(&mut self, buf: &mut [i16]) -> Result<usize, SourceError> {
+            std::thread::sleep(Duration::from_millis(5));
+            let n = buf.len().min(32);
+            buf[..n].fill(500);
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn a_starving_stream_shows_in_the_sample_rate() {
+        use crate::debug::{STALL_THRESHOLD, check_stall};
+
+        let status = playing_status("");
+        let sink = TestSink::default();
+        let debug = test_debug();
+        let factory: SourceFactory = Box::new(|_| Ok(Box::new(DribbleSource)));
+        let (player, _) = spawn_with_tuning(
+            status.clone(),
+            Box::new(sink.clone()),
+            None,
+            factory,
+            test_tuning(),
+            true,
+            debug.clone(),
+        );
+        start_playing(&player, &status);
+
+        std::thread::sleep(Duration::from_millis(100));
+        let snapshot = debug.snapshot();
+        // The loop is alive (recent ages, no stall) but the counters run
+        // far below the 88200 samples/s the spec calls for.
+        assert!(snapshot.samples_written > 0);
+        assert!(
+            snapshot.samples_written < 4410,
+            "wrote {} samples in ~100ms",
+            snapshot.samples_written
+        );
+        assert!(snapshot.last_write_ms_ago.unwrap() < 1000);
+        assert!(check_stall(&status, &debug, STALL_THRESHOLD).is_none());
+        assert!(!debug.snapshot().stalled);
+
+        player.send(Command::Stop);
+        wait_for(|| status.lock().unwrap().state == State::Stopped);
     }
 }
