@@ -8,7 +8,7 @@ description = "Internet radio daemon with an HTTP API and a hard volume cap"
 [dependencies]
 # Only the libraries we use: avformat (format), avcodec (codec), and
 # swresample. Keeps libavfilter/libavdevice off the Pi.
-ffmpeg-next = { version = "8.1.0", default-features = false, features = [
+ffmpeg-next = { version = "9.0.0", default-features = false, features = [
     "codec",
     "format",
     "software-resampling",
