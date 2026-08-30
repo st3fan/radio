@@ -8,10 +8,21 @@ description = "Internet radio daemon with an HTTP API and a hard volume cap"
 [dependencies]
 # Only the libraries we use: avformat (format), avcodec (codec), and
 # swresample. Keeps libavfilter/libavdevice off the Pi.
+#
+# non-exhaustive-enums: Raspberry Pi OS ships a patched FFmpeg whose
+# headers add extra pixel formats (AV_PIX_FMT_RPI4_*, SAND*). Without a
+# catch-all, ffmpeg-next's From<AVPixelFormat> match is then non-exhaustive
+# and the crate fails to build natively on the Pi. This feature adds the
+# wildcard arm so one `cargo build` works everywhere — the Pi, the Debian
+# cross/release builds, and macOS. radiod is audio-only and never converts
+# a pixel format, so the wildcard's `unimplemented!()` is unreachable here.
+# (The alternative, ffmpeg-next/rpi, would break the Debian/macOS builds:
+# it references RPi pixel constants that only exist in the Pi's headers.)
 ffmpeg-next = { version = "9.0.0", default-features = false, features = [
     "codec",
     "format",
     "software-resampling",
+    "non-exhaustive-enums",
 ] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
