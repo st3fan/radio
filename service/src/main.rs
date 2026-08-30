@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use config::Config;
 use pipeline::FfmpegSource;
 use sink::{AudioSink, NullSink, WavSink};
-use source::{Source, SourceError};
+use source::Source;
 use status::{State, Status};
 
 const USAGE: &str = "usage: radiod [--config <path>] [--sink alsa|null|wav:<path>] \
@@ -121,8 +121,12 @@ fn make_alsa_sink(_config: &Config) -> Result<Box<dyn AudioSink>, String> {
     Err("the alsa sink is only available on Linux".to_string())
 }
 
-fn make_source(stream_url: &str) -> Result<Box<dyn Source>, SourceError> {
-    Ok(Box::new(FfmpegSource::open(stream_url)?))
+/// Builds the FFmpeg source factory, baking in the configured read
+/// timeout (the stall watchdog) so every reconnect opens with it.
+fn make_source_factory(read_timeout: Option<Duration>) -> source::SourceFactory {
+    Box::new(move |stream_url: &str| {
+        Ok(Box::new(FfmpegSource::open(stream_url, read_timeout)?) as Box<dyn Source>)
+    })
 }
 
 /// The mixer that owns the hardware ceiling: required for the alsa sink
@@ -231,7 +235,7 @@ async fn main() -> ExitCode {
         status.clone(),
         sink,
         mixer,
-        Box::new(make_source),
+        make_source_factory(config.stream.read_timeout),
         player::Tuning::default(),
         config.airplay.resume_radio,
         debug.clone(),

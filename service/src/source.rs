@@ -6,11 +6,38 @@ use std::fmt;
 use crate::sink::AudioSpec;
 
 #[derive(Debug)]
-pub struct SourceError(pub String);
+pub struct SourceError {
+    message: String,
+    /// The read aborted on the configured `rw_timeout` — a stalled but
+    /// not closed connection — rather than a genuine end or error. The
+    /// player reconnects either way, but the heartbeat records a stall
+    /// distinctly from an EOF so `/debug` reads honestly.
+    timed_out: bool,
+}
+
+impl SourceError {
+    pub fn new(message: impl Into<String>) -> SourceError {
+        SourceError {
+            message: message.into(),
+            timed_out: false,
+        }
+    }
+
+    pub fn timeout(message: impl Into<String>) -> SourceError {
+        SourceError {
+            message: message.into(),
+            timed_out: true,
+        }
+    }
+
+    pub fn timed_out(&self) -> bool {
+        self.timed_out
+    }
+}
 
 impl fmt::Display for SourceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.message)
     }
 }
 

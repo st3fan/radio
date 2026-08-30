@@ -17,7 +17,16 @@ use crate::source::{Source, SourceError};
 
 impl From<ffmpeg::Error> for SourceError {
     fn from(err: ffmpeg::Error) -> SourceError {
-        SourceError(err.to_string())
+        // A read that hit `rw_timeout` comes back as AVERROR(ETIMEDOUT):
+        // the stalled-but-open connection, distinct from a clean EOF or
+        // any other failure. Flag it so the player and heartbeat can
+        // tell a stall apart from an end.
+        if matches!(err, ffmpeg::Error::Other { errno } if errno == ffmpeg::util::error::ETIMEDOUT)
+        {
+            SourceError::timeout(err.to_string())
+        } else {
+            SourceError::new(err.to_string())
+        }
     }
 }
 
@@ -186,15 +195,43 @@ fn format_option(ictx: &mut ffmpeg::format::context::Input, name: &CStr) -> Opti
 }
 
 impl FfmpegSource {
-    pub fn open(url: &str) -> Result<FfmpegSource, SourceError> {
+    pub fn open(url: &str, read_timeout: Option<Duration>) -> Result<FfmpegSource, SourceError> {
         init();
 
         let mut options = ffmpeg::Dictionary::new();
-        // libavformat rides out transient network errors itself; the player
-        // adds reopen-with-backoff on top.
-        options.set("reconnect", "1");
-        options.set("reconnect_streamed", "1");
-        options.set("reconnect_delay_max", "10");
+        match read_timeout {
+            // The read watchdog. A socket that goes quiet without erroring
+            // (a half-open connection — the field stall) otherwise blocks
+            // av_read_frame forever. `timeout` is the tcp protocol's own
+            // socket-I/O deadline (microseconds); set via
+            // AV_OPT_SEARCH_CHILDREN it reaches the innermost tcp layer,
+            // the one actually blocking, and bounds both the stalled read
+            // and any reconnect's connect(). `rw_timeout` is the same idea
+            // at the AVFormatContext level, for plain-http.
+            //
+            // Crucially we do NOT enable libavformat's own `reconnect`
+            // here: its internal retry catches the timeout and reopens
+            // in-place, which on a still-dropped socket just blocks again
+            // and hides the error from us. We want the timeout to surface
+            // as an errored read so the player's reconnect loop takes over
+            // — it drives the backoff, the heartbeat, and the journal
+            // lines. (Verified on the bench: with `reconnect` on, the
+            // silent-break stall never returned.)
+            Some(timeout) => {
+                let micros = timeout.as_micros().min(i64::MAX as u128).to_string();
+                options.set("timeout", &micros);
+                options.set("rw_timeout", &micros);
+            }
+            // No watchdog configured (config 0): fall back to
+            // libavformat's own reconnection and the old block-forever
+            // read, so the behavior is exactly the pre-fix daemon for
+            // A/B testing.
+            None => {
+                options.set("reconnect", "1");
+                options.set("reconnect_streamed", "1");
+                options.set("reconnect_delay_max", "10");
+            }
+        }
         options.set("user_agent", concat!("radiod/", env!("CARGO_PKG_VERSION")));
         // Ask the server for ICY metadata (the http default, but the icy()
         // implementation depends on it — be explicit).
@@ -207,7 +244,7 @@ impl FfmpegSource {
         let stream = ictx
             .streams()
             .best(ffmpeg::media::Type::Audio)
-            .ok_or_else(|| SourceError("no audio stream found".to_string()))?;
+            .ok_or_else(|| SourceError::new("no audio stream found"))?;
         let stream_index = stream.index();
 
         let context = ffmpeg::codec::context::Context::from_parameters(stream.parameters())?;
@@ -215,7 +252,7 @@ impl FfmpegSource {
         let channels = decoder.channels();
         let rate = decoder.rate();
         if channels == 0 || rate == 0 {
-            return Err(SourceError(format!(
+            return Err(SourceError::new(format!(
                 "stream reports invalid audio parameters ({channels} channels, {rate} Hz)"
             )));
         }
@@ -250,25 +287,41 @@ impl FfmpegSource {
 
     /// Reads one packet from the input and decodes it. Returns false once
     /// the input is exhausted.
+    ///
+    /// Drives `Packet::read` directly rather than the `packets()` iterator:
+    /// the iterator collapses *every* read error — including the
+    /// `rw_timeout` firing on a half-open socket — into `None`, making a
+    /// stall indistinguishable from a clean EOF. Reading packets by hand
+    /// lets a timeout (or any real I/O error) propagate as `Err`, which is
+    /// exactly what turns the field stall into a reconnect.
     fn pump(&mut self) -> Result<bool, SourceError> {
+        let mut packet = ffmpeg::codec::packet::Packet::empty();
         loop {
-            match self.ictx.packets().next() {
-                Some((stream, packet)) if stream.index() == self.stream_index => {
-                    // A corrupt packet (junk in the stream) is not fatal;
-                    // skip it and keep going.
-                    if let Err(err) = self.decoder.send_packet(&packet) {
-                        eprintln!("radiod: skipping bad packet: {err}");
+            match packet.read(&mut self.ictx) {
+                Ok(()) => {
+                    if packet.stream() == self.stream_index {
+                        // A corrupt packet (junk in the stream) is not
+                        // fatal; skip it and keep going.
+                        if let Err(err) = self.decoder.send_packet(&packet) {
+                            eprintln!("radiod: skipping bad packet: {err}");
+                        }
+                        self.drain_decoder()?;
+                        return Ok(true);
                     }
-                    self.drain_decoder()?;
-                    return Ok(true);
+                    // A packet from another stream: read the next one.
                 }
-                Some(_) => continue,
-                None => {
+                // A corrupt packet at the demux layer: the demuxer can
+                // resync past it, and it is not latched, so keep reading.
+                Err(ffmpeg::Error::InvalidData) => {}
+                Err(ffmpeg::Error::Eof) => {
                     let _ = self.decoder.send_eof();
                     self.drain_decoder()?;
                     self.eof = true;
                     return Ok(false);
                 }
+                // rw_timeout (ETIMEDOUT) or any other I/O error: propagate
+                // so the player reconnects. `From` flags the timeout case.
+                Err(err) => return Err(SourceError::from(err)),
             }
         }
     }

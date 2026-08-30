@@ -17,6 +17,15 @@ listen = "0.0.0.0:80"
 #initial_volume = 50
 #state_path = "/var/lib/radiod/state.toml"
 
+# Stream tuning. read_timeout_secs is the read watchdog: if a stream
+# read blocks this long the connection is treated as stalled and errored,
+# so the daemon reconnects instead of hanging forever on a half-open
+# socket (the silent-stall failure — audio stops while the UI still says
+# playing). 0 disables it (block forever, the pre-fix behavior). Default
+# 10, matching the /debug stall monitor's threshold.
+#[stream]
+#read_timeout_secs = 10
+
 # Forward FFmpeg's own log lines (reconnect chatter, stream warnings) to
 # the journal, prefixed "radiod: ffmpeg:" and rate limited — a diagnostic
 # aid when hunting streaming stalls, alongside the always-on /debug

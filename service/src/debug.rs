@@ -239,6 +239,16 @@ impl DebugState {
         inner.push("read_error", error.to_string());
     }
 
+    /// A read that hit the configured `rw_timeout`: a stalled but not
+    /// closed connection. Distinct from `read_error` (a genuine failure)
+    /// and from `eof` (a clean end) so `/debug` names the field stall
+    /// for what it is.
+    pub fn read_timeout(&self, error: &str) {
+        let mut inner = self.lock();
+        inner.health.last_error = Some((error.to_string(), Instant::now()));
+        inner.push("read_timeout", error.to_string());
+    }
+
     pub fn sink_error(&self, error: &str) {
         let mut inner = self.lock();
         inner.health.last_error = Some((error.to_string(), Instant::now()));
