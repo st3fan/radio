@@ -26,6 +26,8 @@ pub struct App {
     pub player: Player,
     pub resolver: Resolver,
     pub web: Arc<crate::web::Web>,
+    /// The pipeline heartbeat the player thread feeds; served at /debug.
+    pub debug: Arc<crate::debug::DebugState>,
 }
 
 #[derive(Deserialize)]
@@ -47,6 +49,13 @@ fn error_body(message: &str) -> String {
 async fn route(method: &Method, url: &str, body: &str, app: &App) -> (u16, String) {
     match (method, url) {
         (&Method::GET, "/status") => (200, status_body(app)),
+        // Diagnostics, not API: the shape is explicitly unstable (see
+        // notes/api.md). Browsers get the HTML page from the web router
+        // instead; this is the curl view.
+        (&Method::GET, "/debug") => (
+            200,
+            serde_json::to_string(&app.debug.snapshot()).expect("snapshot serializes"),
+        ),
         (&Method::POST, "/play") => {
             let request: PlayRequest = match serde_json::from_str(body) {
                 Ok(request) => request,
@@ -213,6 +222,13 @@ async fn handle(
     let path = request.uri().path().to_string();
     let query = request.uri().query().map(str::to_string);
     let hx_request = request.headers().contains_key("hx-request");
+    // /debug is one path with two faces: browsers (and HTMX polls) get
+    // the page, everything else (curl) gets the JSON snapshot.
+    let accepts_html = request
+        .headers()
+        .get(hyper::header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/html"));
     let body = match read_body(request.into_body()).await {
         Ok(body) => body,
         Err(err) => {
@@ -225,8 +241,16 @@ async fn handle(
     };
 
     // The website first (page, actions, assets), then the JSON API.
-    if let Some(reply) =
-        crate::web::route(&method, &path, query.as_deref(), &body, hx_request, &app).await
+    if let Some(reply) = crate::web::route(
+        &method,
+        &path,
+        query.as_deref(),
+        &body,
+        hx_request,
+        accepts_html,
+        &app,
+    )
+    .await
     {
         return Ok(match reply {
             crate::web::Reply::Html(code, html) => {
@@ -300,10 +324,16 @@ mod tests {
     fn test_app_with_sink(resolver: Resolver) -> (App, TestSink) {
         let status = Arc::new(Mutex::new(Status::initial(&Config::default())));
         let sink = TestSink::default();
-        let player = player::spawn(
+        // The app shares the debug handle with the player, like main does.
+        let debug = Arc::new(crate::debug::DebugState::new());
+        let (player, _) = player::spawn_with_tuning(
             status.clone(),
             Box::new(sink.clone()),
+            None,
             Box::new(|_| Ok(Box::new(SineSource::new()))),
+            player::Tuning::default(),
+            true,
+            debug.clone(),
         );
         (
             App {
@@ -314,6 +344,7 @@ mod tests {
                     None,
                     crate::web::testing::fixed_channels_fetcher(),
                 )),
+                debug,
             },
             sink,
         )
@@ -746,7 +777,7 @@ mod tests {
         hx: bool,
         app: &App,
     ) -> crate::web::Reply {
-        crate::web::route(method, path, query, body, hx, app)
+        crate::web::route(method, path, query, body, hx, false, app)
             .await
             .expect("a web route")
     }
@@ -1091,7 +1122,7 @@ mod tests {
         }
         // Unknown paths fall through to the JSON API's 404.
         assert!(
-            crate::web::route(&Method::GET, "/nope.css", None, "", false, &app)
+            crate::web::route(&Method::GET, "/nope.css", None, "", false, false, &app)
                 .await
                 .is_none()
         );
@@ -1233,5 +1264,111 @@ mod tests {
         let app = test_app(ok_resolver());
         let (code, _) = route(&Method::POST, "/status", "", &app).await;
         assert_eq!(code, 404);
+    }
+
+    #[tokio::test]
+    async fn get_debug_returns_the_snapshot_json() {
+        let app = test_app(ok_resolver());
+        let (code, body) = route(&Method::GET, "/debug", "", &app).await;
+        assert_eq!(code, 200);
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value["stage"], "idle");
+        assert_eq!(value["stalled"], false);
+        assert!(value["events"].as_array().unwrap().is_empty());
+
+        route(
+            &Method::POST,
+            "/play",
+            r#"{"playlist_url": "https://example.com/x.pls"}"#,
+            &app,
+        )
+        .await;
+        wait_for_state(&app, State::Playing);
+        for _ in 0..500 {
+            if app.debug.snapshot().samples_written > 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let (_, body) = route(&Method::GET, "/debug", "", &app).await;
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value["stream_url"], "https://example.com/stream");
+        assert!(value["samples_written"].as_u64().unwrap() > 0);
+        assert!(value["connect_attempts"].as_u64().unwrap() >= 1);
+        assert!(value["session_started_ms_ago"].is_u64());
+        let events = value["events"].as_array().unwrap();
+        assert!(events.iter().any(|e| e["kind"] == "connected"));
+
+        route(&Method::POST, "/stop", "", &app).await;
+        wait_for_state(&app, State::Stopped);
+    }
+
+    #[tokio::test]
+    async fn debug_page_is_served_to_html_clients_only() {
+        let app = test_app(ok_resolver());
+
+        // A browser (Accept: text/html) gets the page.
+        let reply = crate::web::route(&Method::GET, "/debug", None, "", false, true, &app)
+            .await
+            .expect("a web route");
+        let crate::web::Reply::Html(code, html) = reply else {
+            panic!("expected html");
+        };
+        assert_eq!(code, 200);
+        assert!(html.contains("PIPELINE DEBUG"));
+        assert!(html.contains("STAGE"));
+        assert!(html.contains("idle (for "));
+        assert!(html.contains("— NONE YET —"));
+        assert!(!html.contains("STALLED"), "no stall banner when healthy");
+
+        // An HTMX poll gets the page too.
+        assert!(
+            crate::web::route(&Method::GET, "/debug", None, "", true, false, &app)
+                .await
+                .is_some()
+        );
+
+        // curl does not: the request falls through to the JSON endpoint.
+        assert!(
+            crate::web::route(&Method::GET, "/debug", None, "", false, false, &app)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn debug_page_reflects_playback_and_stalls() {
+        let app = test_app(ok_resolver());
+        route(
+            &Method::POST,
+            "/play",
+            r#"{"playlist_url": "https://example.com/x.pls"}"#,
+            &app,
+        )
+        .await;
+        wait_for_state(&app, State::Playing);
+
+        let reply = crate::web::route(&Method::GET, "/debug", None, "", false, true, &app)
+            .await
+            .expect("a web route");
+        let crate::web::Reply::Html(_, html) = reply else {
+            panic!("expected html");
+        };
+        // minijinja entity-escapes slashes; match the slash-free part.
+        assert!(html.contains("example.com"));
+
+        // Force the stall flag the way the monitor would and check the
+        // banner appears.
+        crate::debug::check_stall(&app.status, &app.debug, Duration::ZERO);
+        let reply = crate::web::route(&Method::GET, "/debug", None, "", false, true, &app)
+            .await
+            .expect("a web route");
+        let crate::web::Reply::Html(_, html) = reply else {
+            panic!("expected html");
+        };
+        assert!(html.contains("! STALLED"));
+
+        route(&Method::POST, "/stop", "", &app).await;
+        wait_for_state(&app, State::Stopped);
     }
 }

@@ -340,6 +340,7 @@ async fn main() -> ExitCode {
         player: player.clone(),
         resolver: Arc::new(pls::resolve),
         web: Arc::new(web::Web::new(args.web_dir.clone())),
+        debug: debug.clone(),
     });
 
     state::spawn_saver(

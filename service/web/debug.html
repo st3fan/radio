@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Radio Debug</title>
+<link rel="stylesheet" href="style.css">
+<script src="htmx.min.js" defer></script>
+<meta name="theme-color" content="#050805">
+</head>
+<body>
+
+{# The whole page polls the HTMX way; without JS a plain reload shows
+   the same fresh snapshot. #}
+<div id="app" hx-get="/debug" hx-select="#app" hx-target="this"
+     hx-swap="outerHTML" hx-trigger="every 2s">
+
+<header class="term-head">
+{% if dev_hash %}<a class="quiet" href="https://github.com/st3fan/radio/commit/{{ dev_hash }}">RADIO DEV ({{ dev_hash }})</a>{% else %}<a class="quiet" href="https://github.com/st3fan/radio/releases/tag/v{{ version }}">RADIO {{ version }}</a>{% endif %}
+<span class="dim">PIPELINE DEBUG</span>
+</header>
+
+{% if stalled %}
+<p class="error">! STALLED — {{ state|upper }} BUT NO AUDIO REACHING THE SINK</p>
+{% endif %}
+
+<section class="channels">
+<div class="heading dim">HEARTBEAT</div>
+<table>
+{% for row in rows %}
+<tr><td class="dim">{{ row.label }}</td><td>{{ row.value }}</td></tr>
+{% endfor %}
+</table>
+</section>
+
+<section class="channels">
+<div class="heading dim">RECENT EVENTS · NEWEST FIRST</div>
+<table>
+<tr><th>EVENT</th><th>DETAIL</th><th class="num">AGE</th></tr>
+{% for event in events %}
+<tr><td class="dim">{{ event.kind }}</td><td>{{ event.detail }}</td><td>{{ event.age }}</td></tr>
+{% else %}
+<tr><td class="dim" colspan="3">— NONE YET —</td></tr>
+{% endfor %}
+</table>
+</section>
+
+</div>
+</body>
+</html>
