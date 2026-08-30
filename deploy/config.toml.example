@@ -17,6 +17,13 @@ listen = "0.0.0.0:80"
 #initial_volume = 50
 #state_path = "/var/lib/radiod/state.toml"
 
+# Forward FFmpeg's own log lines (reconnect chatter, stream warnings) to
+# the journal, prefixed "radiod: ffmpeg:" and rate limited — a diagnostic
+# aid when hunting streaming stalls, alongside the always-on /debug
+# endpoint. The --debug flag does the same without touching this file
+# (`systemctl edit radiod`, add --debug to ExecStart).
+#debug = false
+
 # The hardware output ceiling — the speaker protection. radiod sets this
 # mixer control to the ceiling at startup and re-asserts it whenever
 # playback (re)starts, so alsamixer, a boot-time `alsactl restore`, or a

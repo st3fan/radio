@@ -6,7 +6,8 @@
 
 use std::collections::VecDeque;
 use std::ffi::CStr;
-use std::sync::Once;
+use std::sync::{LazyLock, Mutex, Once};
+use std::time::{Duration, Instant};
 
 use ffmpeg_next as ffmpeg;
 
@@ -27,6 +28,124 @@ fn init() {
             eprintln!("radiod: ffmpeg init failed: {err}");
         }
     });
+}
+
+/// At most this many forwarded FFmpeg lines per second: libavformat can
+/// get chatty (a tight reconnect loop logs per attempt) and stderr goes
+/// straight to the journal.
+const LOG_LINES_PER_SECOND: u32 = 20;
+
+/// The rate limiter for forwarded log lines: a fixed one-second window,
+/// with a count of what was dropped so the journal says so.
+struct LogThrottle {
+    window_started: Instant,
+    printed: u32,
+    suppressed: u64,
+}
+
+impl LogThrottle {
+    fn new() -> LogThrottle {
+        LogThrottle {
+            window_started: Instant::now(),
+            printed: 0,
+            suppressed: 0,
+        }
+    }
+
+    /// Whether a line may print now; `Some(n)` carries how many lines
+    /// were suppressed since the last printed one.
+    fn admit(&mut self, now: Instant) -> Option<u64> {
+        if now.duration_since(self.window_started) >= Duration::from_secs(1) {
+            self.window_started = now;
+            self.printed = 0;
+        }
+        if self.printed < LOG_LINES_PER_SECOND {
+            self.printed += 1;
+            Some(std::mem::take(&mut self.suppressed))
+        } else {
+            self.suppressed += 1;
+            None
+        }
+    }
+}
+
+/// Shared by the callback's invocations (FFmpeg calls it from its own
+/// threads): the throttle plus av_log_format_line's continuation state.
+struct LogState {
+    throttle: LogThrottle,
+    print_prefix: std::os::raw::c_int,
+}
+
+static LOG_STATE: LazyLock<Mutex<LogState>> = LazyLock::new(|| {
+    Mutex::new(LogState {
+        throttle: LogThrottle::new(),
+        print_prefix: 1,
+    })
+});
+
+/// `--debug` / `debug = true`: forward libav* log lines — warnings and
+/// the info-level reconnect chatter we otherwise throw away — to stderr,
+/// prefixed `radiod: ffmpeg:` and rate limited. Installed once at
+/// startup; off by default.
+pub fn enable_verbose_logging() {
+    init();
+    // SAFETY: plain global setters; the callback is a static function
+    // that stays valid for the process lifetime.
+    unsafe {
+        ffmpeg::sys::av_log_set_level(ffmpeg::sys::AV_LOG_INFO);
+        ffmpeg::sys::av_log_set_callback(Some(log_callback));
+    }
+}
+
+/// The `va_list` parameter type as bindgen generates it for this target:
+/// on x86_64 the C array type decays to a pointer in argument position;
+/// everywhere else (aarch64, armhf, Apple arm64) the alias itself appears.
+#[cfg(target_arch = "x86_64")]
+type VaList = *mut ffmpeg::sys::__va_list_tag;
+#[cfg(not(target_arch = "x86_64"))]
+type VaList = ffmpeg::sys::va_list;
+
+unsafe extern "C" fn log_callback(
+    ptr: *mut std::os::raw::c_void,
+    level: std::os::raw::c_int,
+    fmt: *const std::os::raw::c_char,
+    vl: VaList,
+) {
+    if level > ffmpeg::sys::AV_LOG_INFO {
+        return;
+    }
+    // Never unwind into FFmpeg — that aborts the process.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Ok(mut state) = LOG_STATE.lock() else {
+            return;
+        };
+        let Some(suppressed) = state.throttle.admit(Instant::now()) else {
+            return;
+        };
+        if suppressed > 0 {
+            eprintln!("radiod: ffmpeg: ({suppressed} lines suppressed)");
+        }
+        let mut line = [0 as std::os::raw::c_char; 1024];
+        // SAFETY: arguments forwarded from the av_log callback, a valid
+        // buffer, and print_prefix serialized by the lock.
+        unsafe {
+            ffmpeg::sys::av_log_format_line(
+                ptr,
+                level,
+                fmt,
+                vl,
+                line.as_mut_ptr(),
+                line.len() as std::os::raw::c_int,
+                &mut state.print_prefix,
+            );
+        }
+        // SAFETY: av_log_format_line NUL-terminates within line_size.
+        let text = unsafe { CStr::from_ptr(line.as_ptr()) }.to_string_lossy();
+        let text = text.trim_end();
+        if !text.is_empty() {
+            eprintln!("radiod: ffmpeg: {text}");
+        }
+    }));
 }
 
 pub struct FfmpegSource {
@@ -214,5 +333,36 @@ impl Source for FfmpegSource {
         }
         self.last_emitted = Some(current.clone());
         Some(current)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn throttle_admits_up_to_the_limit_then_suppresses() {
+        let mut throttle = LogThrottle::new();
+        let now = Instant::now();
+        for _ in 0..LOG_LINES_PER_SECOND {
+            assert_eq!(throttle.admit(now), Some(0));
+        }
+        assert_eq!(throttle.admit(now), None);
+        assert_eq!(throttle.admit(now), None);
+    }
+
+    #[test]
+    fn throttle_resets_per_window_and_reports_what_it_dropped() {
+        let mut throttle = LogThrottle::new();
+        let now = Instant::now();
+        for _ in 0..LOG_LINES_PER_SECOND {
+            throttle.admit(now);
+        }
+        assert_eq!(throttle.admit(now), None);
+        assert_eq!(throttle.admit(now), None);
+        // A new window admits again, carrying the suppressed count.
+        let later = now + Duration::from_secs(1);
+        assert_eq!(throttle.admit(later), Some(2));
+        assert_eq!(throttle.admit(later), Some(0));
     }
 }

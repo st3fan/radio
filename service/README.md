@@ -38,7 +38,9 @@ cargo run                                 # Linux: plays to the configured ALSA 
 
 Flags: `--config <path>` (default `/etc/radio/config.toml`, optional),
 `--sink alsa|null|wav:<path>` (default `alsa` on Linux, `null` elsewhere),
-`-v`/`--version`.
+`--debug` (forward FFmpeg's log chatter to stderr, rate limited — same
+as `debug = true` in the config; pairs with the always-on `/debug`
+endpoint when hunting streaming stalls), `-v`/`--version`.
 
 On the Debian PC, find the right ALSA device with `aplay -l` and set
 `audio_device` accordingly (`plughw:<card>,<device>` — the `plughw` prefix
