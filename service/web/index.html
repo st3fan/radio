@@ -102,6 +102,35 @@ VOL [{% for i in range(1, 21) %}<button class="seg" name="volume" value="{{ i * 
 
 
 {% if not airplay_active %}
+{# Favourites ("f" while a station plays): same rows as CHANNELS but
+   your list, in the order you added them — no sort links, F-numbers
+   nodding at the physical preset buttons this may grow into. #}
+{% if favourites %}
+<section class="channels">
+<div class="heading dim">&gt; FAVOURITES</div>
+<table>
+<tr><th>CH</th><th>STATION</th><th class="col-genre">GENRE</th><th class="num">LSNRS</th><th></th></tr>
+{% for channel in favourites %}
+<tr{% if channel.is_current %} class="playing"{% endif %}>
+<td>F{{ loop.index }}</td>
+<td title="{{ channel.description }}">{% if channel.is_current %}&gt; {% endif %}{{ channel.title }}</td>
+<td class="col-genre genre">{{ channel.genre }}</td>
+<td class="num">{{ channel.listeners }}</td>
+<td>
+{% if channel.is_current %}
+<span class="onair">[ON AIR]</span>
+{% else %}
+<form method="post" action="/{{ sort_query }}" hx-post="/{{ sort_query }}" hx-target="#app" hx-select="#app" hx-swap="outerHTML">
+<input type="hidden" name="channel" value="{{ channel.id }}">
+<button name="action" value="play">[PLAY]</button>
+</form>
+{% endif %}
+</td>
+</tr>
+{% endfor %}
+</table>
+</section>
+{% endif %}
 <section class="channels">
 <div class="heading dim">&gt; CHANNELS</div>
 {% if channels is none %}
@@ -140,6 +169,20 @@ VOL [{% for i in range(1, 21) %}<button class="seg" name="volume" value="{{ i * 
 /* The blinking cursor doubles as the "updates are alive" indicator. */
 document.body.addEventListener("htmx:afterOnLoad", function () { document.body.classList.add("live"); });
 document.body.addEventListener("htmx:sendError", function () { document.body.classList.remove("live"); });
+
+/* "f" toggles the playing station on the favourites list: posts the
+   same action a form would, so the favourites section swaps in (or
+   out) immediately. The server quietly ignores it when nothing
+   toggleable is playing. */
+document.addEventListener("keydown", function (e) {
+    if (e.key !== "f" || e.metaKey || e.ctrlKey || e.altKey) { return; }
+    var tag = (e.target.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea") { return; }
+    htmx.ajax("POST", location.pathname + location.search, {
+        target: "#app", select: "#app", swap: "outerHTML",
+        values: { action: "favourite" }
+    });
+});
 
 /* Easter egg: "t" cycles the tube through the phosphors a CRT actually
    came in. Sticky via localStorage; the poll never touches <html>, so

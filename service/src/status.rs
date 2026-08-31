@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 
@@ -23,6 +23,24 @@ pub enum AudioSource {
 pub struct AirplayInfo {
     pub rate: u32,
     pub channels: u16,
+}
+
+/// A favourite station: a record, not a bare id, so non-SomaFM sources
+/// can join later without migrating the state file. Persisted as
+/// `[[favourites]]` tables in state.toml.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Favourite {
+    pub source: String,
+    pub id: String,
+}
+
+impl Favourite {
+    pub fn somafm(id: &str) -> Favourite {
+        Favourite {
+            source: "somafm".to_string(),
+            id: id.to_string(),
+        }
+    }
 }
 
 /// Now-playing metadata pushed by the AirPlay sender (DMAP). Each event
@@ -76,6 +94,11 @@ pub struct Status {
     /// state for the website, not part of the API contract.
     #[serde(skip)]
     pub airplay_artwork: Option<AirplayArtwork>,
+    /// Favourite stations in the order they were added; persisted in
+    /// state.toml, resolved against the cached channel list at render
+    /// time. Not part of the API contract.
+    #[serde(skip)]
+    pub favourites: Vec<Favourite>,
 }
 
 impl Status {
@@ -94,6 +117,7 @@ impl Status {
             airplay_gain: 1.0,
             airplay_track: None,
             airplay_artwork: None,
+            favourites: Vec::new(),
         }
     }
 }

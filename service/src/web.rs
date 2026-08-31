@@ -359,6 +359,7 @@ async fn handle_action(app: &App, body: &str, hx_request: bool, sort: Option<Sor
         },
         "mute" => set_muted(app, true),
         "unmute" => set_muted(app, false),
+        "favourite" => action_favourite(app).await,
         "volume" => match field("volume").and_then(|v| v.parse::<u8>().ok()) {
             Some(volume) if volume <= 100 => {
                 app.status.lock().expect("status lock poisoned").volume = volume;
@@ -391,6 +392,37 @@ async fn handle_action(app: &App, body: &str, hx_request: bool, sort: Option<Sor
 
 fn set_muted(app: &App, muted: bool) -> Result<(), String> {
     app.status.lock().expect("status lock poisoned").muted = muted;
+    Ok(())
+}
+
+/// Toggles the currently playing station on the favourites list (the
+/// `f` key). A quiet no-op when nothing resolvable is playing — a
+/// keyboard gesture should never produce an error banner.
+async fn action_favourite(app: &App) -> Result<(), String> {
+    let playing = {
+        let status = app.status.lock().expect("status lock poisoned");
+        if status.source == AudioSource::Airplay || status.state == State::Stopped {
+            return Ok(());
+        }
+        status.playlist_url.clone()
+    };
+    let Some(playing) = playing else {
+        return Ok(());
+    };
+    let Some(channels) = app.web.channels().await else {
+        return Ok(());
+    };
+    let Some(channel) = channels.iter().find(|c| c.playlist_url == playing) else {
+        return Ok(());
+    };
+    let favourite = crate::status::Favourite::somafm(&channel.id);
+    let mut status = app.status.lock().expect("status lock poisoned");
+    match status.favourites.iter().position(|f| *f == favourite) {
+        Some(index) => {
+            status.favourites.remove(index);
+        }
+        None => status.favourites.push(favourite),
+    }
     Ok(())
 }
 
@@ -450,6 +482,9 @@ struct PageContext {
     /// Versioned URL of the sender's cover art (`/airplay/artwork?v=N`),
     /// None while there is none — the airwaves mark fills the box then.
     airplay_artwork: Option<String>,
+    /// Favourite stations resolved to live channel rows, insertion
+    /// order; None (nothing resolvable) renders no FAVOURITES section.
+    favourites: Option<Vec<Channel>>,
     channels: Option<Vec<Channel>>,
     /// "" for the default view, else "?sort=..&dir=.." — baked into the
     /// poll URL and form targets so the chosen order survives swaps.
@@ -538,9 +573,43 @@ async fn render_page(app: &App, error: Option<String>, sort: Option<Sort>) -> Re
                 .find(|c| c.playlist_url == playing && !c.image.is_empty())
                 .map(|c| c.image.clone())
         });
+        // Favourites resolve against the live channel list: titles,
+        // genres and listener counts stay current, and an id SomaFM
+        // stopped serving (or an unknown source) renders as nothing
+        // while staying in the file. Insertion order — it's your list.
+        let favourites: Vec<Channel> = channels
+            .as_ref()
+            .map(|list| {
+                status
+                    .favourites
+                    .iter()
+                    .filter(|f| f.source == "somafm")
+                    .filter_map(|f| list.iter().find(|c| c.id == f.id))
+                    .map(|channel| {
+                        let mut channel = channel.clone();
+                        channel.is_current = !airplay_active
+                            && status.playlist_url.as_deref()
+                                == Some(channel.playlist_url.as_str());
+                        channel
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let favourites = (!favourites.is_empty()).then_some(favourites);
+        // A favourite appears in one list only: whatever renders under
+        // FAVOURITES leaves CHANNELS. Keyed on the rows that actually
+        // resolved, so an unresolvable favourite never makes a channel
+        // vanish from both lists.
+        let favourite_ids: Vec<&str> = favourites
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect();
         let channels = channels.map(|list| {
             let mut list: Vec<Channel> = list
                 .iter()
+                .filter(|channel| !favourite_ids.contains(&channel.id.as_str()))
                 .map(|channel| {
                     let mut channel = channel.clone();
                     channel.is_current = !airplay_active
@@ -600,6 +669,7 @@ async fn render_page(app: &App, error: Option<String>, sort: Option<Sort>) -> Re
                 .as_ref()
                 .map(|artwork| format!("/airplay/artwork?v={}", artwork.version)),
             now_image,
+            favourites,
             channels,
             sort_query: sort_query(sort),
             columns: column_headers(sort),

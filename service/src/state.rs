@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::status::Status;
+use crate::status::{Favourite, Status};
 
 /// How often the saver samples the status. A hard power cut loses at most
 /// this much knob-turning.
@@ -27,15 +27,19 @@ const SAVE_INTERVAL: Duration = Duration::from_secs(2);
 /// What gets persisted. Every field is optional so files from older or
 /// newer versions load cleanly (unknown fields are tolerated for the same
 /// reason — the file is machine-written, not operator-written config).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PersistedState {
     pub volume: Option<u8>,
+    /// `[[favourites]]` tables; absent in files from before the feature.
+    pub favourites: Option<Vec<Favourite>>,
 }
 
 impl PersistedState {
     fn snapshot(status: &Mutex<Status>) -> PersistedState {
+        let status = status.lock().expect("status lock poisoned");
         PersistedState {
-            volume: Some(status.lock().expect("status lock poisoned").volume),
+            volume: Some(status.volume),
+            favourites: Some(status.favourites.clone()),
         }
     }
 }
@@ -153,9 +157,60 @@ mod tests {
     #[test]
     fn save_and_load_round_trip() {
         let path = temp_state_path("round-trip");
-        let state = PersistedState { volume: Some(35) };
+        let state = PersistedState {
+            volume: Some(35),
+            favourites: Some(vec![
+                Favourite::somafm("dronezone"),
+                Favourite::somafm("groovesalad"),
+            ]),
+        };
         save(&path, &state).unwrap();
         assert_eq!(load(&path), Some(state));
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn favourites_persist_as_records() {
+        // [[favourites]] tables with a source field — the file shape that
+        // lets non-SomaFM sources join later without a migration.
+        let path = temp_state_path("records");
+        let state = PersistedState {
+            volume: Some(35),
+            favourites: Some(vec![Favourite::somafm("dronezone")]),
+        };
+        save(&path, &state).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("[[favourites]]"), "{contents}");
+        assert!(contents.contains("source = \"somafm\""), "{contents}");
+        assert!(contents.contains("id = \"dronezone\""), "{contents}");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn volume_only_state_files_still_load() {
+        let path = temp_state_path("pre-favourites");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "volume = 20").unwrap();
+        let state = load(&path).unwrap();
+        assert_eq!(state.volume, Some(20));
+        assert_eq!(state.favourites, None);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn unknown_favourite_sources_survive_the_file() {
+        // Load keeps them (render skips them): a file written by a newer
+        // radiod must not lose entries through an older one.
+        let path = temp_state_path("other-source");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "volume = 20\n\n[[favourites]]\nsource = \"icecast\"\nid = \"x\"\n",
+        )
+        .unwrap();
+        let favourites = load(&path).unwrap().favourites.unwrap();
+        assert_eq!(favourites.len(), 1);
+        assert_eq!(favourites[0].source, "icecast");
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
@@ -196,10 +251,21 @@ mod tests {
         let path = temp_state_path("on-change");
         let mut last = None;
         let mut warned = false;
-        let state = PersistedState { volume: Some(40) };
-        assert!(save_if_changed(&path, state, &mut last, &mut warned));
+        let state = PersistedState {
+            volume: Some(40),
+            favourites: None,
+        };
+        assert!(save_if_changed(
+            &path,
+            state.clone(),
+            &mut last,
+            &mut warned
+        ));
         assert!(!save_if_changed(&path, state, &mut last, &mut warned));
-        let louder = PersistedState { volume: Some(50) };
+        let louder = PersistedState {
+            volume: Some(50),
+            favourites: None,
+        };
         assert!(save_if_changed(&path, louder, &mut last, &mut warned));
         assert_eq!(load(&path).unwrap().volume, Some(50));
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
@@ -216,7 +282,10 @@ mod tests {
         let path = blocker.join("state.toml");
         let mut last = None;
         let mut warned = false;
-        let state = PersistedState { volume: Some(40) };
+        let state = PersistedState {
+            volume: Some(40),
+            favourites: None,
+        };
         assert!(!save_if_changed(&path, state, &mut last, &mut warned));
         assert!(warned);
         assert_eq!(last, None, "a failed write must not update the baseline");
