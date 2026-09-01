@@ -57,6 +57,15 @@ impl Default for StreamConfig {
     }
 }
 
+/// The built-in website's optional password gate. Absent from the config
+/// entirely when off; when present, the password is stored plaintext (the
+/// server faces the LAN over HTTP by design — this is casual gating, not
+/// transport security).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WebConfig {
+    pub password: String,
+}
+
 /// The embedded AirPlay receiver (milestone 11).
 #[derive(Debug, Clone, PartialEq)]
 pub struct AirplayConfig {
@@ -96,6 +105,9 @@ pub struct Config {
     pub mixer: Option<MixerConfig>,
     pub airplay: AirplayConfig,
     pub stream: StreamConfig,
+    /// The optional web-UI password; `None` leaves the site and API open
+    /// (today's behavior). `Some` requires the session cookie everywhere.
+    pub web: Option<WebConfig>,
     /// Where runtime settings persist (state, not config — the default
     /// lives in the systemd StateDirectory).
     pub state_path: std::path::PathBuf,
@@ -113,6 +125,7 @@ impl Default for Config {
             mixer: None,
             airplay: AirplayConfig::default(),
             stream: StreamConfig::default(),
+            web: None,
             state_path: std::path::PathBuf::from("/var/lib/radiod/state.toml"),
             debug: false,
         }
@@ -151,6 +164,7 @@ struct RawConfig {
     mixer: Option<RawMixerConfig>,
     airplay: Option<RawAirplayConfig>,
     stream: Option<RawStreamConfig>,
+    web: Option<RawWebConfig>,
     state_path: Option<String>,
     debug: Option<bool>,
 }
@@ -168,6 +182,12 @@ struct RawMixerConfig {
     device: Option<String>,
     ceiling_db: Option<f32>,
     ceiling_percent: Option<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawWebConfig {
+    password: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -261,6 +281,19 @@ impl Config {
             }
         };
 
+        let web = match raw.web {
+            None => None,
+            Some(raw_web) => {
+                let password = raw_web.password.unwrap_or_default();
+                if password.is_empty() {
+                    return Err(ConfigError::Invalid(
+                        "[web] password must not be empty".to_string(),
+                    ));
+                }
+                Some(WebConfig { password })
+            }
+        };
+
         Ok(Config {
             listen,
             audio_device: raw.audio_device.unwrap_or(defaults.audio_device),
@@ -268,6 +301,7 @@ impl Config {
             mixer,
             airplay,
             stream,
+            web,
             state_path: raw
                 .state_path
                 .map(std::path::PathBuf::from)
@@ -468,6 +502,37 @@ mod tests {
         assert!(!Config::from_toml("").unwrap().debug);
         assert!(Config::from_toml("debug = true").unwrap().debug);
         assert!(!Config::from_toml("debug = false").unwrap().debug);
+    }
+
+    #[test]
+    fn web_password_defaults_off_and_parses() {
+        assert_eq!(Config::from_toml("").unwrap().web, None);
+        let config = Config::from_toml("[web]\npassword = \"hunter2\"").unwrap();
+        assert_eq!(
+            config.web,
+            Some(WebConfig {
+                password: "hunter2".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn web_password_empty_or_missing_is_rejected() {
+        for toml in ["[web]", "[web]\npassword = \"\""] {
+            let err = Config::from_toml(toml).unwrap_err();
+            let ConfigError::Invalid(message) = err else {
+                panic!("expected Invalid, got {err:?}");
+            };
+            assert!(message.contains("[web] password"), "message: {message}");
+        }
+    }
+
+    #[test]
+    fn web_rejects_unknown_keys() {
+        assert!(matches!(
+            Config::from_toml("[web]\npasssword = \"x\""),
+            Err(ConfigError::Toml(_))
+        ));
     }
 
     #[test]

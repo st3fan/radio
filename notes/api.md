@@ -20,6 +20,21 @@ below use that.)
   a moment. Poll `GET /status` for the settled result (the website does
   this by reloading the page).
 
+## Authentication
+
+When the config sets `[web] password`, every endpoint below (and the
+website) requires a session cookie; without one the API answers
+`401 {"error": "unauthorized"}`. The cookie is a stateless HMAC-SHA256
+bearer token keyed by the password — not the password itself — with
+`Path=/`, `HttpOnly`, `SameSite=Lax` and a one-year `Max-Age`.
+
+`POST /login` accepts a form-encoded `password` (`application/x-www-form-urlencoded`,
+not JSON) and returns `303 /` with a `Set-Cookie: radiod=…` header on
+success, or `303 /login?error=…` on failure. `POST /logout` clears it.
+Changing the configured password invalidates every outstanding cookie.
+This is casual gating of LAN traffic over plain HTTP — not transport
+security.
+
 ## Endpoints
 
 ### `GET /status`

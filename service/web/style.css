@@ -85,6 +85,15 @@ body::after {
     letter-spacing: 0.1em;
 }
 
+/* The header's right cluster: mode subtitle + the optional [LOCK]. */
+.term-head .right {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.term-head .right form { display: inline; }
+
 /* ---- messages ---- */
 
 .error {
@@ -259,19 +268,41 @@ tr.playing .onair {
     text-shadow: none;
 }
 
-input[type="number"] {
-    width: 4em;
+input[type="number"],
+input[type="password"] {
     background: var(--ground);
     border: 1px solid var(--dim);
     color: var(--phosphor);
     font: inherit;
     text-shadow: inherit;
+    padding: 4px 8px;
+}
+
+input[type="number"] {
+    width: 4em;
     padding: 2px 6px;
 }
 
-input[type="number"]:focus-visible {
+input[type="password"] {
+    width: 18ch;
+}
+
+input[type="number"]:focus-visible,
+input[type="password"]:focus-visible {
     outline: 1px solid var(--bright);
     border-color: var(--bright);
+}
+
+/* ---- login ---- */
+
+.login { margin-top: 40px; }
+
+.login .prompt { letter-spacing: 0.1em; margin-bottom: 10px; }
+
+.login form {
+    display: flex;
+    align-items: center;
+    gap: 12px;
 }
 
 /* ---- channel table ---- */

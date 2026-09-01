@@ -25,6 +25,12 @@ pub enum Reply {
     Html(u16, String),
     /// 303 See Other — POST-redirect-GET for non-HTMX form posts.
     Redirect(String),
+    /// 303 See Other that also sets (or clears) the auth cookie — the
+    /// login and logout flows.
+    RedirectCookie {
+        location: String,
+        set_cookie: String,
+    },
     Asset(&'static str, Vec<u8>),
     /// AirPlay cover art: cacheable for a short while (the page busts
     /// the URL per track via `?v=N`, so polls stay cheap).
@@ -239,20 +245,26 @@ fn sort_query(sort: Option<Sort>) -> String {
     }
 }
 
+/// Everything the web router needs to know about a request, grouped so
+/// `route` stays readable instead of growing an unwieldy argument list.
+pub struct WebRequest<'a> {
+    pub method: &'a hyper::Method,
+    pub path: &'a str,
+    pub query: Option<&'a str>,
+    pub body: &'a str,
+    pub hx_request: bool,
+    pub accepts_html: bool,
+    /// Already cleared the password gate (feature off, open path, or a
+    /// valid cookie) — only `/login` cares, to bounce the authed home.
+    pub authed: bool,
+}
+
 /// Routes a request to the website; `None` means "not a web path" and the
 /// caller falls through to the JSON API.
-pub async fn route(
-    method: &hyper::Method,
-    path: &str,
-    query: Option<&str>,
-    body: &str,
-    hx_request: bool,
-    accepts_html: bool,
-    app: &App,
-) -> Option<Reply> {
-    let pairs = query.map(form_pairs).unwrap_or_default();
+pub async fn route(request: &WebRequest<'_>, app: &App) -> Option<Reply> {
+    let pairs = request.query.map(form_pairs).unwrap_or_default();
     let sort = sort_from_query(&pairs);
-    match (method, path) {
+    match (request.method, request.path) {
         (&hyper::Method::GET, "/") => {
             let error = pairs
                 .into_iter()
@@ -260,15 +272,37 @@ pub async fn route(
                 .map(|(_, v)| v);
             Some(render_page(app, error, sort).await)
         }
-        (&hyper::Method::POST, "/") => Some(handle_action(app, body, hx_request, sort).await),
+        (&hyper::Method::POST, "/") => {
+            Some(handle_action(app, request.body, request.hx_request, sort).await)
+        }
+        // The login page and its two actions. /login GET renders the form
+        // unless the request is already authed (bounce to /); POST /login
+        // checks the password and either sets the cookie or returns to the
+        // form with an error; POST /logout just clears the cookie.
+        (&hyper::Method::GET, "/login") => {
+            if request.authed {
+                Some(Reply::Redirect("/".to_string()))
+            } else {
+                let error = pairs
+                    .into_iter()
+                    .find(|(k, _)| k == "error")
+                    .map(|(_, v)| v);
+                Some(render_login_page(app, error))
+            }
+        }
+        (&hyper::Method::POST, "/login") => Some(handle_login(app, request.body)),
+        (&hyper::Method::POST, "/logout") => Some(Reply::RedirectCookie {
+            location: "/login".to_string(),
+            set_cookie: app.auth.logout_cookie(),
+        }),
         // The /debug page for browsers and its own HTMX polls; a client
         // that does not ask for HTML (curl) falls through to the JSON
         // snapshot in the API router.
-        (&hyper::Method::GET, "/debug") if accepts_html || hx_request => {
+        (&hyper::Method::GET, "/debug") if request.accepts_html || request.hx_request => {
             Some(render_debug_page(app))
         }
         (&hyper::Method::GET, "/airplay/artwork") => Some(serve_artwork(app)),
-        (&hyper::Method::GET, _) => serve_asset(app, path),
+        (&hyper::Method::GET, _) => serve_asset(app, request.path),
         _ => None,
     }
 }
@@ -422,6 +456,26 @@ async fn action_play(app: &App, channel_id: &str) -> Result<(), String> {
         .map_err(|(_code, message)| message)
 }
 
+/// The login POST: a correct password sets the session cookie and lands
+/// on the tuner; anything else bounces back to the form with an error.
+/// POST-redirect-GET only — the login page has no HTMX.
+fn handle_login(app: &App, body: &str) -> Reply {
+    let form = form_pairs(body);
+    let password = form
+        .iter()
+        .find(|(k, _)| k == "password")
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("");
+    if app.auth.verify(password) {
+        Reply::RedirectCookie {
+            location: "/".to_string(),
+            set_cookie: app.auth.login_cookie(),
+        }
+    } else {
+        Reply::Redirect(format!("/login?error={}", url_encode("bad password")))
+    }
+}
+
 #[derive(Serialize)]
 struct PageContext {
     /// Compiled-in crate version; the banner links to its release page.
@@ -457,6 +511,9 @@ struct PageContext {
     /// poll URL and form targets so the chosen order survives swaps.
     sort_query: String,
     columns: Vec<ColumnHeader>,
+    /// When the config sets a password, the header shows a [LOCK] button
+    /// to forget the session.
+    password_set: bool,
 }
 
 #[derive(Serialize)]
@@ -605,9 +662,34 @@ async fn render_page(app: &App, error: Option<String>, sort: Option<Sort>) -> Re
             channels,
             sort_query: sort_query(sort),
             columns: column_headers(sort),
+            password_set: app.auth.enabled(),
         }
     };
     match render_template(app, "index.html", &context) {
+        Ok(html) => Reply::Html(200, html),
+        Err(err) => {
+            eprintln!("radiod: web: template error: {err}");
+            Reply::Html(500, format!("template error: {err}"))
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct LoginPageContext {
+    version: &'static str,
+    dev_hash: &'static str,
+    error: Option<String>,
+}
+
+/// The password page: the same phosphor terminal, but a single prompt
+/// asking for the password. Plain POST-redirect-GET, no HTMX, no poller.
+fn render_login_page(app: &App, error: Option<String>) -> Reply {
+    let context = LoginPageContext {
+        version: env!("CARGO_PKG_VERSION"),
+        dev_hash: env!("RADIOD_DEV_HASH"),
+        error,
+    };
+    match render_template(app, "login.html", &context) {
         Ok(html) => Reply::Html(200, html),
         Err(err) => {
             eprintln!("radiod: web: template error: {err}");
@@ -634,6 +716,7 @@ fn render_template(
         None => match name {
             "index.html" => include_str!("../web/index.html"),
             "debug.html" => include_str!("../web/debug.html"),
+            "login.html" => include_str!("../web/login.html"),
             other => unreachable!("unknown template {other}"),
         },
     };

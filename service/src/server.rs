@@ -28,6 +28,9 @@ pub struct App {
     pub web: Arc<crate::web::Web>,
     /// The pipeline heartbeat the player thread feeds; served at /debug.
     pub debug: Arc<crate::debug::DebugState>,
+    /// The optional web-UI password gate; `None` leaves the site and API
+    /// open (today's behavior).
+    pub auth: crate::auth::Auth,
 }
 
 #[derive(Deserialize)]
@@ -214,6 +217,29 @@ fn respond_cached(
         .expect("valid response")
 }
 
+/// What the auth gate decides for a request. Kept pure so the routing
+/// tests can exercise it without a live hyper connection.
+enum Gate {
+    /// Pass through unchanged (the feature is off, the path is open, or
+    /// the request carried a valid cookie).
+    Allow,
+    /// Bounce browsers (and HTMX) to the login page.
+    Redirect,
+    /// Answer 401 for non-HTML clients (the JSON API).
+    Deny,
+}
+
+fn gate(app: &App, path: &str, accepts_html: bool, hx_request: bool, authed: bool) -> Gate {
+    if !app.auth.enabled() || crate::auth::open_path(path) || authed {
+        return Gate::Allow;
+    }
+    if accepts_html || hx_request {
+        Gate::Redirect
+    } else {
+        Gate::Deny
+    }
+}
+
 async fn handle(
     request: Request<Incoming>,
     app: Arc<App>,
@@ -229,6 +255,33 @@ async fn handle(
         .get(hyper::header::ACCEPT)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.contains("text/html"));
+    let cookie = request
+        .headers()
+        .get(hyper::header::COOKIE)
+        .and_then(|value| value.to_str().ok());
+
+    // The password gate. Symmetric decision for both the website and the
+    // JSON API: only the login flow and the static assets behind it are
+    // open. Browsers get bounced to /login, HTTP clients get a 401.
+    let authed = app.auth.check(cookie);
+    match gate(&app, &path, accepts_html, hx_request, authed) {
+        Gate::Allow => {}
+        Gate::Redirect => {
+            return Ok(Response::builder()
+                .status(303)
+                .header(hyper::header::LOCATION, "/login")
+                .body(Full::new(Bytes::new()))
+                .expect("valid response"));
+        }
+        Gate::Deny => {
+            return Ok(respond(
+                401,
+                "application/json",
+                error_body("unauthorized").into_bytes(),
+            ));
+        }
+    }
+
     let body = match read_body(request.into_body()).await {
         Ok(body) => body,
         Err(err) => {
@@ -241,17 +294,16 @@ async fn handle(
     };
 
     // The website first (page, actions, assets), then the JSON API.
-    if let Some(reply) = crate::web::route(
-        &method,
-        &path,
-        query.as_deref(),
-        &body,
+    let web_request = crate::web::WebRequest {
+        method: &method,
+        path: path.as_str(),
+        query: query.as_deref(),
+        body: body.as_str(),
         hx_request,
         accepts_html,
-        &app,
-    )
-    .await
-    {
+        authed,
+    };
+    if let Some(reply) = crate::web::route(&web_request, &app).await {
         return Ok(match reply {
             crate::web::Reply::Html(code, html) => {
                 respond(code, "text/html; charset=utf-8", html.into_bytes())
@@ -259,6 +311,15 @@ async fn handle(
             crate::web::Reply::Redirect(location) => Response::builder()
                 .status(303)
                 .header(hyper::header::LOCATION, location)
+                .body(Full::new(Bytes::new()))
+                .expect("valid response"),
+            crate::web::Reply::RedirectCookie {
+                location,
+                set_cookie,
+            } => Response::builder()
+                .status(303)
+                .header(hyper::header::LOCATION, location)
+                .header(hyper::header::SET_COOKIE, set_cookie)
                 .body(Full::new(Bytes::new()))
                 .expect("valid response"),
             crate::web::Reply::Asset(content_type, bytes) => {
@@ -345,9 +406,16 @@ mod tests {
                     crate::web::testing::fixed_channels_fetcher(),
                 )),
                 debug,
+                auth: crate::auth::Auth::new(None),
             },
             sink,
         )
+    }
+
+    fn test_app_with_auth(password: Option<&str>) -> App {
+        let mut app = test_app(ok_resolver());
+        app.auth = crate::auth::Auth::new(password.map(str::to_string));
+        app
     }
 
     fn ok_resolver() -> Resolver {
@@ -769,6 +837,26 @@ mod tests {
         drop(bridge_sink);
     }
 
+    fn req<'a>(
+        method: &'a Method,
+        path: &'a str,
+        query: Option<&'a str>,
+        body: &'a str,
+        hx_request: bool,
+        accepts_html: bool,
+        authed: bool,
+    ) -> crate::web::WebRequest<'a> {
+        crate::web::WebRequest {
+            method,
+            path,
+            query,
+            body,
+            hx_request,
+            accepts_html,
+            authed,
+        }
+    }
+
     async fn web(
         method: &Method,
         path: &str,
@@ -777,7 +865,7 @@ mod tests {
         hx: bool,
         app: &App,
     ) -> crate::web::Reply {
-        crate::web::route(method, path, query, body, hx, false, app)
+        crate::web::route(&req(method, path, query, body, hx, false, false), app)
             .await
             .expect("a web route")
     }
@@ -1125,9 +1213,12 @@ mod tests {
         }
         // Unknown paths fall through to the JSON API's 404.
         assert!(
-            crate::web::route(&Method::GET, "/nope.css", None, "", false, false, &app)
-                .await
-                .is_none()
+            crate::web::route(
+                &req(&Method::GET, "/nope.css", None, "", false, false, false),
+                &app
+            )
+            .await
+            .is_none()
         );
     }
 
@@ -1311,9 +1402,12 @@ mod tests {
         let app = test_app(ok_resolver());
 
         // A browser (Accept: text/html) gets the page.
-        let reply = crate::web::route(&Method::GET, "/debug", None, "", false, true, &app)
-            .await
-            .expect("a web route");
+        let reply = crate::web::route(
+            &req(&Method::GET, "/debug", None, "", false, true, false),
+            &app,
+        )
+        .await
+        .expect("a web route");
         let crate::web::Reply::Html(code, html) = reply else {
             panic!("expected html");
         };
@@ -1329,16 +1423,22 @@ mod tests {
 
         // An HTMX poll gets the page too.
         assert!(
-            crate::web::route(&Method::GET, "/debug", None, "", true, false, &app)
-                .await
-                .is_some()
+            crate::web::route(
+                &req(&Method::GET, "/debug", None, "", true, false, false),
+                &app
+            )
+            .await
+            .is_some()
         );
 
         // curl does not: the request falls through to the JSON endpoint.
         assert!(
-            crate::web::route(&Method::GET, "/debug", None, "", false, false, &app)
-                .await
-                .is_none()
+            crate::web::route(
+                &req(&Method::GET, "/debug", None, "", false, false, false),
+                &app
+            )
+            .await
+            .is_none()
         );
     }
 
@@ -1354,9 +1454,12 @@ mod tests {
         .await;
         wait_for_state(&app, State::Playing);
 
-        let reply = crate::web::route(&Method::GET, "/debug", None, "", false, true, &app)
-            .await
-            .expect("a web route");
+        let reply = crate::web::route(
+            &req(&Method::GET, "/debug", None, "", false, true, false),
+            &app,
+        )
+        .await
+        .expect("a web route");
         let crate::web::Reply::Html(_, html) = reply else {
             panic!("expected html");
         };
@@ -1366,9 +1469,12 @@ mod tests {
         // Force the stall flag the way the monitor would and check the
         // banner appears.
         crate::debug::check_stall(&app.status, &app.debug, Duration::ZERO);
-        let reply = crate::web::route(&Method::GET, "/debug", None, "", false, true, &app)
-            .await
-            .expect("a web route");
+        let reply = crate::web::route(
+            &req(&Method::GET, "/debug", None, "", false, true, false),
+            &app,
+        )
+        .await
+        .expect("a web route");
         let crate::web::Reply::Html(_, html) = reply else {
             panic!("expected html");
         };
@@ -1376,5 +1482,168 @@ mod tests {
 
         route(&Method::POST, "/stop", "", &app).await;
         wait_for_state(&app, State::Stopped);
+    }
+
+    #[test]
+    fn auth_gate_decides_per_request() {
+        let open = test_app(ok_resolver());
+        let locked = test_app_with_auth(Some("hunter2"));
+
+        // Feature off: every path is allowed, cookie or not.
+        for path in ["/", "/status", "/login", "/style.css"] {
+            assert!(
+                matches!(gate(&open, path, false, false, false), Gate::Allow),
+                "path {path}"
+            );
+        }
+
+        // Feature on: the login flow and the static assets stay open.
+        for path in ["/login", "/logout", "/style.css", "/theme.js"] {
+            assert!(
+                matches!(gate(&locked, path, false, false, false), Gate::Allow),
+                "path {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn auth_gate_lets_a_valid_cookie_through() {
+        let locked = test_app_with_auth(Some("hunter2"));
+        // login_cookie() doubles as a well-formed Cookie header for the
+        // same authentication it was minted for.
+        let cookie = locked.auth.login_cookie();
+        assert!(locked.auth.check(Some(&cookie)));
+
+        let authed = locked.auth.check(Some(&cookie));
+        for path in ["/", "/status", "/play", "/pause", "/debug"] {
+            assert!(
+                matches!(gate(&locked, path, false, false, authed), Gate::Allow),
+                "path {path}"
+            );
+        }
+
+        // Without a valid cookie: browsers redirect, API clients are denied.
+        assert!(matches!(
+            gate(&locked, "/", true, false, false),
+            Gate::Redirect
+        ));
+        assert!(matches!(
+            gate(&locked, "/", false, true, false),
+            Gate::Redirect
+        ));
+        for path in ["/", "/status", "/play"] {
+            assert!(
+                matches!(gate(&locked, path, false, false, false), Gate::Deny),
+                "path {path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn login_flow_sets_and_clears_the_cookie() {
+        let app = test_app_with_auth(Some("hunter2"));
+
+        // Unauthenticated GET /login renders the password form.
+        let crate::web::Reply::Html(code, html) = crate::web::route(
+            &req(&Method::GET, "/login", None, "", false, true, false),
+            &app,
+        )
+        .await
+        .expect("a web route") else {
+            panic!("expected html");
+        };
+        assert_eq!(code, 200);
+        assert!(html.contains("PASSWORD REQUIRED"));
+        assert!(html.contains("type=\"password\""));
+
+        // Already-authed GET /login bounces home.
+        let crate::web::Reply::Redirect(location) = crate::web::route(
+            &req(&Method::GET, "/login", None, "", false, true, true),
+            &app,
+        )
+        .await
+        .expect("a web route") else {
+            panic!("expected redirect");
+        };
+        assert_eq!(location, "/");
+
+        // A wrong password returns to the form with an error, no cookie.
+        let crate::web::Reply::Redirect(location) = crate::web::route(
+            &req(
+                &Method::POST,
+                "/login",
+                None,
+                "password=nope",
+                false,
+                false,
+                false,
+            ),
+            &app,
+        )
+        .await
+        .expect("a web route") else {
+            panic!("expected redirect");
+        };
+        assert_eq!(location, "/login?error=bad+password");
+
+        // The right password sets the cookie and lands on the tuner.
+        let crate::web::Reply::RedirectCookie {
+            location,
+            set_cookie,
+        } = crate::web::route(
+            &req(
+                &Method::POST,
+                "/login",
+                None,
+                "password=hunter2",
+                false,
+                false,
+                false,
+            ),
+            &app,
+        )
+        .await
+        .expect("a web route")
+        else {
+            panic!("expected redirect with cookie");
+        };
+        assert_eq!(location, "/");
+        assert!(set_cookie.starts_with("radiod="));
+        assert!(set_cookie.contains("HttpOnly"));
+        assert!(set_cookie.contains("SameSite=Lax"));
+        assert!(app.auth.check(Some(&set_cookie)));
+
+        // /logout clears the cookie.
+        let crate::web::Reply::RedirectCookie {
+            location,
+            set_cookie,
+        } = crate::web::route(
+            &req(&Method::POST, "/logout", None, "", false, false, true),
+            &app,
+        )
+        .await
+        .expect("a web route")
+        else {
+            panic!("expected redirect with cookie");
+        };
+        assert_eq!(location, "/login");
+        assert!(set_cookie.contains("Max-Age=0"));
+    }
+
+    #[tokio::test]
+    async fn lock_button_appears_only_when_password_is_set() {
+        let app = test_app(ok_resolver());
+        let crate::web::Reply::Html(_, html) = web(&Method::GET, "/", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        assert!(!html.contains("[LOCK]"));
+
+        let app = test_app_with_auth(Some("hunter2"));
+        let crate::web::Reply::Html(_, html) = web(&Method::GET, "/", None, "", false, &app).await
+        else {
+            panic!("expected html");
+        };
+        assert!(html.contains("[LOCK]"));
     }
 }

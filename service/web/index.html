@@ -27,7 +27,10 @@
    flip when an AirPlay session starts while the page is open. #}
 <header class="term-head">
 {% if dev_hash %}<a class="quiet" href="https://github.com/st3fan/radio/commit/{{ dev_hash }}">RADIO DEV ({{ dev_hash }})</a>{% else %}<a class="quiet" href="https://github.com/st3fan/radio/releases/tag/v{{ version }}">RADIO {{ version }}</a>{% endif %}
+<span class="right">
 <span class="dim">{% if airplay_active %}OPENAIRPLAY RECEIVER{% else %}SOMAFM TUNER{% endif %}</span>
+{% if password_set %}<form method="post" action="/logout"><button>[LOCK]</button></form>{% endif %}
+</span>
 </header>
 
 
