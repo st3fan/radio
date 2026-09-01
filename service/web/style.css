@@ -269,7 +269,7 @@ tr.playing .onair {
 }
 
 input[type="number"],
-input.secret {
+input[type="password"] {
     background: var(--ground);
     border: 1px solid var(--dim);
     color: var(--phosphor);
@@ -283,15 +283,12 @@ input[type="number"] {
     padding: 2px 6px;
 }
 
-/* The login secret: a text field masked as dots, so the password manager
-   never treats it as a credential to save. */
-input.secret {
+input[type="password"] {
     width: 18ch;
-    -webkit-text-security: disc;
 }
 
 input[type="number"]:focus-visible,
-input.secret:focus-visible {
+input[type="password"]:focus-visible {
     outline: 1px solid var(--bright);
     border-color: var(--bright);
 }
