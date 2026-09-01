@@ -148,6 +148,16 @@ submit. Reuses `style.css`, `theme.js` (so `t` still cycles the tube on
 the login screen), the `.term-head` / `.prompt` / `.error` classes and
 the `?error=` state. Plain POST-redirect-GET, no HTMX, no poller.
 
+> **Design note (added during implementation).** The input is *not*
+> `type="password"`. Submitting a real password field makes Safari (and
+> others) offer to save it, and a password manager cannot tell a wrong
+> guess from a right one — on a bad password Safari still offered "save
+> this password". Instead the secret is a `type="text"` field masked with
+> `-webkit-text-security: disc` (supported by WebKit/Blink), which the
+> password manager never classifies as a credential; a tiny script falls
+> back to a real password field on browsers that cannot mask (Firefox).
+> The daemon only needs the session cookie, never a saved credential.
+
 **`web/index.html`** — a `[LOCK]` button appears in the header next to
 the mode subtitle, only when the password is set (new `password_set`
 flag on `PageContext`). It is a plain `POST /logout` form (no HTMX), so
