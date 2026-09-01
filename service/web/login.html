@@ -26,13 +26,27 @@
 
 <section class="login">
 <div class="prompt dim">&gt; PASSWORD REQUIRED</div>
-<form method="post" action="/login">
-<input type="password" name="password" autofocus autocomplete="current-password" placeholder="· · · · · ·">
+<form method="post" action="/login" autocomplete="off">
+{# Not type=password: browsers (Safari especially) offer to save any
+   password field they see submitted, and they cannot tell a wrong guess
+   from a right one. A text field masked with -webkit-text-security slips
+   past the password manager by design here — the daemon never needs a
+   saved credential, only the session cookie. #}
+<input type="text" name="password" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" autofocus>
 <button>[ENTER]</button>
 </form>
 </section>
 
 <footer class="dim"><a class="quiet" href="https://github.com/st3fan/radio">github.com/st3fan/radio</a></footer>
+
+<script>
+/* Browsers without -webkit-text-security (Firefox) can't mask a text
+   input; fall back to a real password field there so the secret stays
+   hidden. Nothing else depends on the type. */
+if (!window.CSS || !CSS.supports("-webkit-text-security", "disc")) {
+    document.querySelector('input[name="password"]').type = "password";
+}
+</script>
 
 </body>
 </html>

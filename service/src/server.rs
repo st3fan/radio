@@ -1554,7 +1554,10 @@ mod tests {
         };
         assert_eq!(code, 200);
         assert!(html.contains("PASSWORD REQUIRED"));
-        assert!(html.contains("type=\"password\""));
+        // The field is deliberately not type=password (Safari offers to
+        // save any password field it sees); it is masked with CSS instead.
+        assert!(html.contains("name=\"password\""));
+        assert!(!html.contains("type=\"password\""));
 
         // Already-authed GET /login bounces home.
         let crate::web::Reply::Redirect(location) = crate::web::route(
