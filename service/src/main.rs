@@ -1,4 +1,5 @@
 mod airplay;
+mod auth;
 mod config;
 mod debug;
 mod icy;
@@ -356,6 +357,7 @@ async fn main() -> ExitCode {
         resolver: Arc::new(pls::resolve),
         web: Arc::new(web::Web::new(args.web_dir.clone())),
         debug: debug.clone(),
+        auth: auth::Auth::new(config.web.map(|web_config| web_config.password)),
     });
 
     state::spawn_saver(

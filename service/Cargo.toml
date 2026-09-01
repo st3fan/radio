@@ -29,6 +29,13 @@ tokio = { version = "1", features = ["rt", "net", "signal", "sync", "time", "mac
 # the binary; --web-dir loads them from disk for dev). Pure Rust, ~no deps.
 minijinja = "2"
 
+# The optional web-UI password's session cookie is an HMAC-SHA256 bearer
+# token keyed by the password. Both crates already sit in the tree as
+# transitive deps of openairplay2 (RustCrypto): promoting them to direct
+# deps costs essentially nothing and keeps the cookie stateless.
+hmac = "0.12"
+sha2 = "0.10"
+
 # The embedded AirPlay 2 receiver (milestone 11): network -> PCM + events,
 # pure Rust (symphonia AAC, RustCrypto, zbus for Avahi), runs on our tokio
 # runtime. The bridge into the pipeline lives in src/airplay.rs.

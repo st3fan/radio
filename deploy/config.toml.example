@@ -33,6 +33,18 @@ listen = "0.0.0.0:80"
 # (`systemctl edit radiod`, add --debug to ExecStart).
 #debug = false
 
+# Optional password for the web UI and JSON API. When set, the website
+# asks for it before showing anything and remembers the browser with a
+# cookie (a [LOCK] button in the header forgets it); the JSON API returns
+# 401 without that cookie. Absent, everything stays open as before.
+#
+# This is casual gating of LAN traffic, not security: the server serves
+# plain HTTP, so the password and the cookie cross the wire in the clear,
+# and the password is stored in this file in PLAINTEXT. Fine for keeping
+# a guest phone off the volume control; not a vault.
+#[web]
+#password = "hunter2"
+
 # The hardware output ceiling — the speaker protection. radiod sets this
 # mixer control to the ceiling at startup and re-asserts it whenever
 # playback (re)starts, so alsamixer, a boot-time `alsactl restore`, or a

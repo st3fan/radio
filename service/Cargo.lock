@@ -1046,6 +1046,7 @@ version = "0.6.0"
 dependencies = [
  "alsa",
  "ffmpeg-next",
+ "hmac",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -1053,6 +1054,7 @@ dependencies = [
  "openairplay2",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "toml",
  "ureq",

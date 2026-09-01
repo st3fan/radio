@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Radio</title>
+<link rel="stylesheet" href="style.css">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="theme-color" content="#050805">
+<meta name="apple-mobile-web-app-title" content="RADIO">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<script src="theme.js"></script>
+</head>
+<body>
+
+<header class="term-head">
+{% if dev_hash %}<a class="quiet" href="https://github.com/st3fan/radio/commit/{{ dev_hash }}">RADIO DEV ({{ dev_hash }})</a>{% else %}<a class="quiet" href="https://github.com/st3fan/radio/releases/tag/v{{ version }}">RADIO {{ version }}</a>{% endif %}
+<span class="dim">IDENTIFY</span>
+</header>
+
+{% if error %}
+<p class="error">! ERROR: {{ error }}</p>
+{% endif %}
+
+<section class="login">
+<div class="prompt dim">&gt; PASSWORD REQUIRED</div>
+<form method="post" action="/login">
+<input type="password" name="password" autofocus autocomplete="current-password" placeholder="· · · · · ·">
+<button>[ENTER]</button>
+</form>
+</section>
+
+<footer class="dim"><a class="quiet" href="https://github.com/st3fan/radio">github.com/st3fan/radio</a></footer>
+
+</body>
+</html>
