@@ -300,6 +300,7 @@ fn serve_asset(app: &App, path: &str) -> Option<Reply> {
     let (name, content_type): (&str, &'static str) = match path {
         "/style.css" => ("style.css", "text/css"),
         "/htmx.min.js" => ("htmx.min.js", "text/javascript"),
+        "/theme.js" => ("theme.js", "text/javascript"),
         "/manifest.json" => ("manifest.json", "application/manifest+json"),
         "/icon-180.png" => ("icon-180.png", "image/png"),
         "/icon-192.png" => ("icon-192.png", "image/png"),
@@ -316,6 +317,7 @@ fn serve_asset(app: &App, path: &str) -> Option<Reply> {
     let bytes: &'static [u8] = match name {
         "style.css" => include_bytes!("../web/style.css"),
         "htmx.min.js" => include_bytes!("../web/htmx.min.js"),
+        "theme.js" => include_bytes!("../web/theme.js"),
         "manifest.json" => include_bytes!("../web/manifest.json"),
         "icon-180.png" => include_bytes!("../web/icon-180.png"),
         "icon-192.png" => include_bytes!("../web/icon-192.png"),
