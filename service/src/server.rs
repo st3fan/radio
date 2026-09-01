@@ -799,6 +799,8 @@ mod tests {
         assert!(html.contains(env!("RADIOD_DEV_HASH")));
         assert!(html.contains("— NO SIGNAL —"));
         assert!(html.contains("STANDBY"));
+        // The phosphor lives in the shared script, not inline.
+        assert!(html.contains("theme.js"));
         // Channels from the injected fetcher, sorted by listeners.
         assert!(html.contains("DEF CON Radio"));
         assert!(html.contains("Groove Salad"));
@@ -1109,6 +1111,7 @@ mod tests {
         for (path, content_type) in [
             ("/style.css", "text/css"),
             ("/htmx.min.js", "text/javascript"),
+            ("/theme.js", "text/javascript"),
             ("/manifest.json", "application/manifest+json"),
             ("/icon-180.png", "image/png"),
         ] {
@@ -1316,6 +1319,9 @@ mod tests {
         };
         assert_eq!(code, 200);
         assert!(html.contains("PIPELINE DEBUG"));
+        // The phosphor is shared with the main page: same stylesheet,
+        // same theme script, so "t" cycles here too.
+        assert!(html.contains("theme.js"), "the debug page loads the theme");
         assert!(html.contains("STAGE"));
         assert!(html.contains("idle (for "));
         assert!(html.contains("— NONE YET —"));
